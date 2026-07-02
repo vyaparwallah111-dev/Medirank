@@ -1,17 +1,53 @@
-import Link from 'next/link'; import { ArrowUpRight, ClipboardCheck, QrCode, ScanLine, Sparkles, Star } from 'lucide-react';
-import { displayDoctorName, getAuthenticatedUser, getCurrentDoctor } from '@/lib/dashboard';
+import Link from "next/link";
+import { ArrowUpRight, ClipboardCheck, LockKeyhole, QrCode, ScanLine, Sparkles, Star } from "lucide-react";
+import { displayDoctorName, getAuthenticatedUser, getCurrentDoctor } from "@/lib/dashboard";
 
-export default async function Dashboard(){
-  const doctor=await getCurrentDoctor(); const {supabase,user}=await getAuthenticatedUser();
-  const [scansResult,reviewsResult,copiedResult,recentResult]=await Promise.all([
-    supabase.from('scans').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id),
-    supabase.from('generated_reviews').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id),
-    supabase.from('scans').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).eq('review_copied',true),
-    supabase.from('scans').select('id,created_at,review_generated,review_copied,redirected_to_gmb').eq('doctor_id',doctor.id).order('created_at',{ascending:false}).limit(6)
+export default async function Dashboard() {
+  const doctor = await getCurrentDoctor();
+  const { supabase, user } = await getAuthenticatedUser();
+  const [scansResult, reviewsResult, copiedResult, recentResult] = await Promise.all([
+    supabase.from("scans").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id),
+    supabase.from("generated_reviews").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id),
+    supabase.from("scans").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("review_copied", true),
+    supabase.from("scans").select("id,created_at,review_generated,review_copied,redirected_to_gmb").eq("doctor_id", doctor.id).order("created_at", { ascending: false }).limit(6),
   ]);
-  if(doctor.auth_user_id!==user.id) throw new Error('Forbidden');
-  const scans=scansResult.count??0,reviews=reviewsResult.count??0,copied=copiedResult.count??0,conversion=scans?copied/scans*100:0;
-  const stats=[[ScanLine,'Total scans',scans.toLocaleString()],[Sparkles,'Reviews generated',reviews.toLocaleString()],[ClipboardCheck,'Copied & posted',copied.toLocaleString()],[Star,'Conversion rate',`${conversion.toFixed(1)}%`]] as const;
-  const recent=recentResult.data??[]; const today=new Intl.DateTimeFormat('en-IN',{weekday:'long',day:'numeric',month:'long'}).format(new Date()).toUpperCase();
-  return <div className="mx-auto max-w-7xl"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm font-semibold text-brand">{today}</p><h1 className="mt-1 text-3xl font-extrabold">Good morning, Dr. {displayDoctorName(doctor.doctor_name)}</h1><p className="mt-1 text-slate-500">Here’s what’s happening with your patient reviews.</p></div><Link href={`/r/${doctor.slug}`} className="btn-primary"><QrCode size={18}/>Open patient page</Link></div><div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{stats.map(([Icon,label,value])=><div className="card p-5" key={label}><span className="grid h-10 w-10 place-items-center rounded-xl bg-blue-50 text-brand"><Icon size={20}/></span><p className="mt-5 text-3xl font-extrabold">{value}</p><p className="mt-1 text-sm text-slate-500">{label}</p></div>)}</div><div className="mt-5 grid gap-5 xl:grid-cols-[1.45fr_.55fr]"><div className="card p-6"><div><h2 className="font-bold">Review activity</h2><p className="text-sm text-slate-500">Scans and posted reviews over the last 30 days</p></div>{scans===0?<div className="grid h-64 place-items-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60 text-center"><div><ScanLine className="mx-auto text-slate-300" size={32}/><p className="mt-3 font-semibold text-slate-600">No activity yet</p><p className="mt-1 text-sm text-slate-400">Your first scan will appear here.</p></div></div>:<div className="mt-8 flex h-56 items-end gap-2 border-b border-l px-3">{Array.from({length:14},(_,i)=><div key={i} className="flex h-full flex-1 items-end gap-0.5"><i className="w-1/2 rounded-t bg-blue-200" style={{height:`${Math.max(5,(i+1)/14*100)}%`}}/><i className="w-1/2 rounded-t bg-brand" style={{height:`${Math.max(3,(i+1)/14*conversion)}%`}}/></div>)}</div>}</div><div className="card p-6"><h2 className="font-bold">Your review QR</h2><p className="text-sm text-slate-500">Ready for your reception desk</p><div className="mx-auto mt-5 grid aspect-square max-w-44 place-items-center rounded-2xl border bg-white p-3"><QrCode className="h-full w-full text-slate-950" strokeWidth={1.2}/></div><Link href="/dashboard/qr-code" className="btn-secondary mt-5 w-full">View & download <ArrowUpRight size={16}/></Link></div></div><div className="mt-5 card overflow-hidden"><div className="border-b p-5"><h2 className="font-bold">Recent activity</h2></div>{recent.length?recent.map(row=><div className="flex items-center gap-4 border-b border-slate-100 p-4 last:border-0" key={row.id}><span className={`h-2.5 w-2.5 rounded-full ${row.review_copied?'bg-emerald-400':'bg-blue-400'}`}/><p className="flex-1 text-sm font-medium">{row.review_copied?'Review copied and Google opened':row.review_generated?'AI review generated':'QR code scanned'}</p><span className="text-xs text-slate-400">{new Date(row.created_at).toLocaleDateString('en-IN')}</span></div>):<div className="p-8 text-center text-sm text-slate-400">No patient activity yet.</div>}</div></div>
+  if (doctor.auth_user_id !== user.id) throw new Error("Forbidden");
+
+  const scans = scansResult.count ?? 0;
+  const reviews = reviewsResult.count ?? 0;
+  const copied = copiedResult.count ?? 0;
+  const conversion = scans ? (copied / scans) * 100 : 0;
+  const recent = recentResult.data ?? [];
+  const today = new Intl.DateTimeFormat("en-IN", { weekday: "long", day: "numeric", month: "long" }).format(new Date()).toUpperCase();
+  const isStarter = doctor.plan === "starter" || doctor.plan === "free" || !doctor.plan;
+
+  const heading = <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm font-semibold text-brand">{today}</p><h1 className="mt-1 text-3xl font-extrabold">Good morning, Dr. {displayDoctorName(doctor.doctor_name)}</h1><p className="mt-1 text-slate-500">{isStarter ? "Your Starter plan usage at a glance." : "Here’s what’s happening with your patient reviews."}</p></div><Link href={`/r/${doctor.slug}`} className="btn-primary"><QrCode size={18} />Open patient page</Link></div>;
+
+  if (isStarter) return (
+    <div className="mx-auto max-w-7xl">
+      {heading}
+      <div className="card mt-8 max-w-md p-6">
+        <span className="grid h-11 w-11 place-items-center rounded-xl bg-blue-50 text-brand"><ScanLine size={22} /></span>
+        <p className="mt-5 text-3xl font-extrabold">Total Scans: {scans.toLocaleString()} / 20</p>
+        <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-brand" style={{ width: `${Math.min(100, (scans / 20) * 100)}%` }} /></div>
+      </div>
+      <div className="relative mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <div aria-hidden="true" className="pointer-events-none grid gap-5 p-6 blur-[5px] sm:grid-cols-3"><div className="h-32 rounded-xl bg-gradient-to-br from-blue-100 to-slate-100"/><div className="h-32 rounded-xl bg-gradient-to-br from-emerald-100 to-slate-100"/><div className="h-32 rounded-xl bg-gradient-to-br from-orange-100 to-slate-100"/><div className="h-56 rounded-xl bg-slate-100 sm:col-span-3"/></div>
+        <div className="absolute inset-0 grid place-items-center bg-white/45 p-5 backdrop-blur-[2px]"><div className="max-w-sm rounded-2xl border border-blue-100 bg-white p-6 text-center shadow-soft"><LockKeyhole className="mx-auto text-brand" size={30}/><h2 className="mt-4 text-xl font-extrabold">Upgrade to Unlock Advanced Analytics</h2><p className="mt-2 text-sm leading-6 text-slate-500">Access conversion charts, time-series trends, and review sentiment insights.</p><Link href="/pricing" className="btn-primary mt-5 min-h-12 w-full">View Growth plans</Link></div></div>
+      </div>
+    </div>
+  );
+
+  const stats = [[ScanLine, "Total scans", scans.toLocaleString()], [Sparkles, "Reviews generated", reviews.toLocaleString()], [ClipboardCheck, "Copied & posted", copied.toLocaleString()], [Star, "Conversion rate", `${conversion.toFixed(1)}%`]] as const;
+  return (
+    <div className="mx-auto max-w-7xl">
+      {heading}
+      <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{stats.map(([Icon, label, value]) => <div className="card p-5" key={label}><span className="grid h-10 w-10 place-items-center rounded-xl bg-blue-50 text-brand"><Icon size={20}/></span><p className="mt-5 text-3xl font-extrabold">{value}</p><p className="mt-1 text-sm text-slate-500">{label}</p></div>)}</div>
+      <div className="mt-5 grid gap-5 xl:grid-cols-[1.45fr_.55fr]">
+        <div className="card p-6"><h2 className="font-bold">Review activity</h2><p className="text-sm text-slate-500">Scans and posted reviews over the last 30 days</p><div className="mt-8 flex h-56 items-end gap-2 border-b border-l px-3">{Array.from({ length: 14 }, (_, index) => <div key={index} className="flex h-full flex-1 items-end gap-0.5"><i className="w-1/2 rounded-t bg-blue-200" style={{ height: `${Math.max(5, ((index + 1) / 14) * 100)}%` }}/><i className="w-1/2 rounded-t bg-brand" style={{ height: `${Math.max(3, ((index + 1) / 14) * conversion)}%` }}/></div>)}</div></div>
+        <div className="card p-6"><h2 className="font-bold">Your review QR</h2><p className="text-sm text-slate-500">Ready for your reception desk</p><div className="mx-auto mt-5 grid aspect-square max-w-44 place-items-center rounded-2xl border bg-white p-3"><QrCode className="h-full w-full text-slate-950" strokeWidth={1.2}/></div><Link href="/dashboard/qr-code" className="btn-secondary mt-5 w-full">View & download <ArrowUpRight size={16}/></Link></div>
+      </div>
+      <div className="card mt-5 overflow-hidden"><div className="border-b p-5"><h2 className="font-bold">Recent activity</h2></div>{recent.length ? recent.map(row => <div className="flex items-center gap-4 border-b border-slate-100 p-4 last:border-0" key={row.id}><span className={`h-2.5 w-2.5 rounded-full ${row.review_copied ? "bg-emerald-400" : "bg-blue-400"}`}/><p className="flex-1 text-sm font-medium">{row.review_copied ? "Review copied and Google opened" : row.review_generated ? "AI review generated" : "QR code scanned"}</p><span className="text-xs text-slate-400">{new Date(row.created_at).toLocaleDateString("en-IN")}</span></div>) : <div className="p-8 text-center text-sm text-slate-400">No patient activity yet.</div>}</div>
+    </div>
+  );
 }

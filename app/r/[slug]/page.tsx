@@ -10,6 +10,8 @@ export const revalidate=0;
 
 function unavailable(){return <main className="grid min-h-[100dvh] place-items-center bg-slate-50 px-5"><div className="max-w-sm rounded-2xl border border-slate-200 bg-white p-7 text-center shadow-sm"><AlertCircle className="mx-auto text-orange" size={32}/><h1 className="mt-4 text-xl font-bold">Patient page unavailable</h1><p className="mt-2 text-sm leading-6 text-slate-500">We couldn’t load this clinic right now. Please try scanning the QR code again shortly.</p></div></main>}
 
+function starterLimit(){return <main className="grid min-h-[100dvh] place-items-center bg-slate-50 px-5"><div className="max-w-md rounded-3xl border border-blue-100 bg-white p-8 text-center shadow-soft"><AlertCircle className="mx-auto text-brand" size={38}/><h1 className="mt-5 text-2xl font-extrabold text-slate-950">Plan Limit Exceeded</h1><p className="mt-3 font-bold leading-7 text-slate-700">Upgrade Your Plan to continue using MediRank.</p><div className="fixed inset-x-0 bottom-0 border-t border-slate-200 bg-white/95 px-4 py-3 text-center text-sm font-bold text-slate-700 backdrop-blur">Powered by Vyapar Wallah</div></div></main>}
+
 export default async function PatientPage({params}:PageProps){
   const resolvedParams=await params;
   const resolvedSlug=typeof resolvedParams?.slug==='string'?decodeURIComponent(resolvedParams.slug).trim():'';
@@ -18,9 +20,15 @@ export default async function PatientPage({params}:PageProps){
   if(!supabase){console.error('Patient page: Supabase admin client is not configured.');return unavailable()}
 
   try{
-    const {data:doctor,error}=await supabase.from('doctors').select('id,doctor_name,clinic_name,specialization,slug,gmb_review_link,logo_url,theme_config,knowledge_base').eq('slug',resolvedSlug).eq('is_active',true).maybeSingle();
+    const {data:doctor,error}=await supabase.from('doctors').select('id,doctor_name,clinic_name,specialization,slug,gmb_review_link,logo_url,theme_config,knowledge_base,plan').eq('slug',resolvedSlug).eq('is_active',true).maybeSingle();
     if(error){console.error('Patient page doctor lookup failed:',error.message);return unavailable()}
     if(!doctor)notFound();
+    const isStarter=doctor.plan==='starter'||doctor.plan==='free'||!doctor.plan;
+    if(isStarter){
+      const {count:scanCount,error:scanCountError}=await supabase.from('scans').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id);
+      if(scanCountError){console.error('Patient page scan limit lookup failed:',scanCountError.message);return unavailable()}
+      if((scanCount??0)>=20)return starterLimit();
+    }
 
     const rawKnowledge=doctor.knowledge_base;
     const knowledgeBase:KnowledgeBase=rawKnowledge&&typeof rawKnowledge==='object'&&!Array.isArray(rawKnowledge)?{
@@ -35,7 +43,7 @@ export default async function PatientPage({params}:PageProps){
     ]);
     const keywords=keywordResult.status==='fulfilled'?(keywordResult.value.data??[]):[];
     const scan=scanResult.status==='fulfilled'?scanResult.value.data:null;
-    return <ReviewExperience doctor={doctor} scanId={scan?.id??null} experienceKeywords={keywords.filter(item=>item.category!=='treatment').map(item=>item.keyword).filter(Boolean)} topServices={knowledgeBase.top_services}/>;
+    return <ReviewExperience doctor={doctor} isStarter={isStarter} scanId={scan?.id??null} experienceKeywords={keywords.filter(item=>item.category!=='treatment').map(item=>item.keyword).filter(Boolean)} topServices={knowledgeBase.top_services}/>;
   }catch(error){
     // Preserve Next.js navigation signals such as notFound().
     if(error&&typeof error==='object'&&'digest' in error)throw error;

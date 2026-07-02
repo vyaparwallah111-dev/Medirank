@@ -34,11 +34,13 @@ export function ReviewExperience({
   experienceKeywords,
   topServices,
   scanId,
+  isStarter,
 }: {
   doctor: Doctor;
   experienceKeywords: string[];
   topServices: string[];
   scanId: string | null;
+  isStarter: boolean;
 }) {
   const theme = { ...fallback, ...doctor.theme_config };
   const style = {
@@ -72,9 +74,10 @@ export function ReviewExperience({
     set: (items: string[]) => void,
   ) => {
     if (current.includes(value)) set(current.filter((item) => item !== value));
-    else if (current.length < 2) set([...current, value]);
+    else if (current.length < 2 && (!isStarter || selectedExperiences.length + selectedServices.length < 3)) set([...current, value]);
   };
   function changeLanguage(value: Language) {
+    if (isStarter && value !== "english") return;
     setLanguage(value);
     setChoice(0);
     setCopied(false);
@@ -177,7 +180,7 @@ export function ReviewExperience({
   return (
     <main
       style={style}
-      className="min-h-[100dvh] bg-[var(--patient-bg)] px-3 pb-8 pt-3 text-slate-950 sm:px-5 sm:pb-12 sm:pt-5"
+      className={`min-h-[100dvh] bg-[var(--patient-bg)] px-3 pt-3 text-slate-950 sm:px-5 sm:pt-5 ${isStarter ? "pb-20 sm:pb-20" : "pb-8 sm:pb-12"}`}
     >
       <div className="mx-auto w-full max-w-xl">
         <a
@@ -312,12 +315,15 @@ export function ReviewExperience({
                   type="button"
                   key={item}
                   onClick={() => changeLanguage(item)}
+                  disabled={isStarter && item === "hinglish"}
+                  title={isStarter && item === "hinglish" ? "Available on Growth & Premium plans" : undefined}
                   style={
                     language === item ? { color: theme.primary } : undefined
                   }
-                  className={`min-h-11 rounded-lg text-sm font-bold capitalize ${language === item ? "bg-white shadow-sm" : "text-slate-500"}`}
+                  className={`relative min-h-11 rounded-lg text-sm font-bold capitalize ${language === item ? "bg-white shadow-sm" : "text-slate-500"} disabled:cursor-not-allowed disabled:text-slate-400 disabled:opacity-60`}
                 >
                   {item === "english" ? "English" : "Hinglish"}
+                  {isStarter && item === "hinglish" && <span className="absolute -right-1 -top-2 rounded-full bg-slate-700 px-2 py-0.5 text-[9px] font-bold normal-case text-white">Growth & Premium</span>}
                 </button>
               ))}
             </div>
@@ -424,6 +430,7 @@ export function ReviewExperience({
           </a>
         </footer>
       </div>
+      {isStarter && <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-4 py-3 text-center text-sm font-extrabold text-slate-700 shadow-[0_-8px_24px_rgba(15,23,42,.08)] backdrop-blur">Powered by Vyapar Wallah</div>}
     </main>
   );
 }
