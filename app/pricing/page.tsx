@@ -61,7 +61,7 @@ const plans = [
       "24/7 premium email support",
     ],
     cta: "Upgrade to Growth",
-    href: "/signup?plan=growth",
+    href: "/payment?plan=growth",
   },
   {
     name: "Clinic / Premium",
@@ -78,7 +78,7 @@ const plans = [
       "Dedicated account manager with Bihar and India support",
     ],
     cta: "Contact Sales / Buy Premium",
-    href: "mailto:support@vyaparwallah.com?subject=MediRank%20Premium%20Plan",
+    href: "/payment?plan=premium",
   },
 ] as const;
 
