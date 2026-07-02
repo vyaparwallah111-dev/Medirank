@@ -90,7 +90,7 @@ Generate exactly ${targetCount} unique, distinct review variants separated by th
 Do not include any introduction, JSON, markdown, or surrounding conversational phrases.`;
     let reviews:string[]=[];
     for(const model of ['gemini-2.5-flash']){
-      const geminiPayload={contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:.8,maxOutputTokens:1000}};
+      const geminiPayload={contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:.8,maxOutputTokens:2500}};
       console.log('Gemini request',{model,doctor_id:doctor.id,area_name:area,city_name:city,selected_treatment_keyword:selectedTreatment,language,prompt,payload:geminiPayload});
       try{
         const response=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)});
@@ -105,7 +105,13 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
         console.error('Gemini returned invalid review count',{model,targetCount,count:reviews.length,raw:textResponse});
       }catch(error){console.error('Gemini request threw',{model,error:error instanceof Error?error.message:String(error)})}
     }
-    if(reviews.length!==targetCount)return reply({error:'Review generation is temporarily unavailable. Please try again.'});
+    // If we got at least 2 reviews, accept it and don't crash the UI.
+    if(reviews.length>=2){
+      console.log(`Accepted partial generation: requested ${targetCount}, got ${reviews.length}`);
+    }else{
+      // Only throw if generation is empty or returned fewer than 2 variants.
+      throw new Error(`Insufficient review count: got ${reviews.length}`);
+    }
     const {error:insertError}=await db.from('generated_reviews').insert(reviews.map(content=>({doctor_id:doctor.id,content})));
     if(insertError)console.error('Generated review insert failed',insertError);
     return reply({reviews,target_count:targetCount});
