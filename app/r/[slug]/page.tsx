@@ -1,0 +1,45 @@
+import { notFound } from 'next/navigation';
+import { AlertCircle } from 'lucide-react';
+import { ReviewExperience } from '@/components/review-experience';
+import { createAdminClient } from '@/lib/supabase/admin';
+
+type PageProps={params:{slug:string}|Promise<{slug:string}>};
+type KnowledgeBase={area_name:string;city_name:string;top_services:string[]};
+export const dynamic='force-dynamic';
+export const revalidate=0;
+
+function unavailable(){return <main className="grid min-h-[100dvh] place-items-center bg-slate-50 px-5"><div className="max-w-sm rounded-2xl border border-slate-200 bg-white p-7 text-center shadow-sm"><AlertCircle className="mx-auto text-orange" size={32}/><h1 className="mt-4 text-xl font-bold">Patient page unavailable</h1><p className="mt-2 text-sm leading-6 text-slate-500">We couldn’t load this clinic right now. Please try scanning the QR code again shortly.</p></div></main>}
+
+export default async function PatientPage({params}:PageProps){
+  const resolvedParams=await params;
+  const resolvedSlug=typeof resolvedParams?.slug==='string'?decodeURIComponent(resolvedParams.slug).trim():'';
+  if(!resolvedSlug)notFound();
+  const supabase=createAdminClient();
+  if(!supabase){console.error('Patient page: Supabase admin client is not configured.');return unavailable()}
+
+  try{
+    const {data:doctor,error}=await supabase.from('doctors').select('id,doctor_name,clinic_name,specialization,slug,gmb_review_link,logo_url,theme_config,knowledge_base').eq('slug',resolvedSlug).eq('is_active',true).maybeSingle();
+    if(error){console.error('Patient page doctor lookup failed:',error.message);return unavailable()}
+    if(!doctor)notFound();
+
+    const rawKnowledge=doctor.knowledge_base;
+    const knowledgeBase:KnowledgeBase=rawKnowledge&&typeof rawKnowledge==='object'&&!Array.isArray(rawKnowledge)?{
+      area_name:typeof rawKnowledge.area_name==='string'?rawKnowledge.area_name:'',
+      city_name:typeof rawKnowledge.city_name==='string'?rawKnowledge.city_name:'',
+      top_services:Array.isArray(rawKnowledge.top_services)?rawKnowledge.top_services.filter((item:unknown):item is string=>typeof item==='string'&&!!item.trim()):[],
+    }:{area_name:'',city_name:'',top_services:[]};
+
+    const [keywordResult,scanResult]=await Promise.allSettled([
+      supabase.from('doctor_keywords').select('keyword,category').eq('doctor_id',doctor.id).order('created_at'),
+      supabase.from('scans').insert({doctor_id:doctor.id,user_agent:'web'}).select('id').single(),
+    ]);
+    const keywords=keywordResult.status==='fulfilled'?(keywordResult.value.data??[]):[];
+    const scan=scanResult.status==='fulfilled'?scanResult.value.data:null;
+    return <ReviewExperience doctor={doctor} scanId={scan?.id??null} experienceKeywords={keywords.filter(item=>item.category!=='treatment').map(item=>item.keyword).filter(Boolean)} topServices={knowledgeBase.top_services}/>;
+  }catch(error){
+    // Preserve Next.js navigation signals such as notFound().
+    if(error&&typeof error==='object'&&'digest' in error)throw error;
+    console.error('Unhandled patient page error:',error);
+    return unavailable();
+  }
+}

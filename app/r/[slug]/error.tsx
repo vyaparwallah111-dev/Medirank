@@ -1,0 +1,3 @@
+'use client';
+import { AlertTriangle, RefreshCw } from 'lucide-react';
+export default function PatientError({reset}:{error:Error&{digest?:string};reset:()=>void}){return <main className="grid min-h-[100dvh] place-items-center bg-slate-50 px-5"><div className="max-w-sm rounded-2xl bg-white p-7 text-center shadow-sm ring-1 ring-slate-200"><AlertTriangle className="mx-auto text-orange" size={34}/><h1 className="mt-4 text-xl font-bold">Something went wrong</h1><p className="mt-2 text-sm text-slate-500">The clinic page couldn’t finish loading.</p><button onClick={reset} className="btn-primary mt-5 min-h-12 w-full"><RefreshCw size={18}/>Try again</button></div></main>}
