@@ -41,7 +41,7 @@ export async function POST(request: Request) {
       }).eq("id", payment.id);
       if (paymentUpdateError) throw paymentUpdateError;
 
-      const { error: doctorUpdateError } = await admin.from("doctors").update({ plan: payment.plan }).eq("id", payment.doctor_id);
+      const { error: doctorUpdateError } = await admin.from("doctors").update({ plan: payment.plan, subscription_tier: payment.plan }).eq("id", payment.doctor_id);
       if (doctorUpdateError) throw doctorUpdateError;
     }
 

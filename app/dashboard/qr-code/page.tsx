@@ -11,7 +11,8 @@ export default async function QRCodePage() {
   const { supabase } = await getAuthenticatedUser();
   const { count } = await supabase.from('qr_codes').select('*', { count: 'exact', head: true }).eq('doctor_id', doctor.id);
   const qrCount = count ?? 0;
-  const isStarter = doctor.plan === 'starter' || doctor.plan === 'free' || !doctor.plan;
+  const subscriptionTier = doctor.subscription_tier?.trim().toLowerCase() || 'starter';
+  const isStarter = subscriptionTier === 'starter';
   const starterLimitReached = isStarter && qrCount >= 1;
   const configuredOrigin = process.env.NEXT_PUBLIC_APP_URL || '';
 

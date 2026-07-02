@@ -15,11 +15,11 @@ const nav = [
 
 export function DashboardShell({ children, doctor }: {
   children: React.ReactNode;
-  doctor: { doctor_name: string; clinic_name: string; plan: string | null };
+  doctor: { doctor_name: string; clinic_name: string; plan: string | null; subscription_tier: string | null };
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  const isStarter = doctor.plan === "starter" || doctor.plan === "free" || !doctor.plan;
+  const isStarter = (doctor.subscription_tier?.trim().toLowerCase() || "starter") === "starter";
 
   async function logout() {
     await createClient()?.auth.signOut();

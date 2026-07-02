@@ -55,14 +55,12 @@ Deno.serve(async(req)=>{
     const url=Deno.env.get('SUPABASE_URL'),serviceKey=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),geminiKey=Deno.env.get('GEMINI_API_KEY');
     if(!url||!serviceKey||!geminiKey){console.error('Missing Edge Function secrets',{hasUrl:!!url,hasServiceKey:!!serviceKey,hasGeminiKey:!!geminiKey});return reply({error:'Review service is not configured.'})}
     const db=createClient(url,serviceKey);
-    const {data:doctor,error:doctorError}=await db.from('doctors').select('id,doctor_name,clinic_name,city,specialization,knowledge_base,plan').eq('id',doctorId).eq('is_active',true).maybeSingle();
+    const {data:doctor,error:doctorError}=await db.from('doctors').select('id,doctor_name,clinic_name,city,specialization,knowledge_base,subscription_tier').eq('id',doctorId).eq('is_active',true).maybeSingle();
     if(doctorError){console.error('Doctor lookup failed',doctorError);return reply({error:'Unable to load clinic details.'})}
     if(!doctor)return reply({error:'Clinic not found.'});
 
-    // The current schema stores the subscription tier in doctors.plan. Treat
-    // legacy "free" records as Starter so old accounts cannot bypass limits.
-    const subscriptionTier=text(doctor.plan,'free').toLowerCase();
-    const isStarter=subscriptionTier==='starter'||subscriptionTier==='free';
+    const subscriptionTier=text(doctor.subscription_tier,'starter').toLowerCase();
+    const isStarter=subscriptionTier==='starter';
     if(isStarter)targetCount=2;
     const language=isStarter?'English':body.language==='hinglish'?'Hinglish (Latin script)':'English';
 

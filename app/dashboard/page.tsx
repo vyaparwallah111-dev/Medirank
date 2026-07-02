@@ -19,7 +19,7 @@ export default async function Dashboard() {
   const conversion = scans ? (copied / scans) * 100 : 0;
   const recent = recentResult.data ?? [];
   const today = new Intl.DateTimeFormat("en-IN", { weekday: "long", day: "numeric", month: "long" }).format(new Date()).toUpperCase();
-  const isStarter = doctor.plan === "starter" || doctor.plan === "free" || !doctor.plan;
+  const isStarter = (doctor.subscription_tier?.trim().toLowerCase() || "starter") === "starter";
 
   const heading = <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm font-semibold text-brand">{today}</p><h1 className="mt-1 text-3xl font-extrabold">Good morning, Dr. {displayDoctorName(doctor.doctor_name)}</h1><p className="mt-1 text-slate-500">{isStarter ? "Your Starter plan usage at a glance." : "Here’s what’s happening with your patient reviews."}</p></div><Link href={`/r/${doctor.slug}`} className="btn-primary"><QrCode size={18} />Open patient page</Link></div>;
 
