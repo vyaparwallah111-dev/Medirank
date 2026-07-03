@@ -1,6 +1,7 @@
 "use client";
 import type { CSSProperties } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   Check,
   Clipboard,
@@ -28,6 +29,7 @@ const fallback = {
   accent: "#F97316",
   background: "#F8FAFC",
 };
+const ThankYouAnimation = dynamic(() => import("./thank-you-animation"), { ssr: false });
 
 export function ReviewExperience({
   doctor,
@@ -62,6 +64,10 @@ export function ReviewExperience({
   const [isReviewCopied, setIsReviewCopied] = useState(false);
   const [error, setError] = useState("");
   const [selectionMessage, setSelectionMessage] = useState("");
+  const [eligibilityChecking, setEligibilityChecking] = useState(true);
+  const [eligibilityError, setEligibilityError] = useState("");
+  const [deviceToken, setDeviceToken] = useState("");
+  const [patientLocation, setPatientLocation] = useState<{latitude:number;longitude:number}|null>(null);
   const reviews = reviewsByLanguage[language];
   const initials = doctor.doctor_name
     .replace(/^dr\.?\s*/i, "")
@@ -70,6 +76,21 @@ export function ReviewExperience({
     .slice(0, 2)
     .join("")
     .toUpperCase();
+  useEffect(()=>{
+    let active=true;
+    const token=localStorage.getItem('medirank_device_token')||crypto.randomUUID();
+    localStorage.setItem('medirank_device_token',token);setDeviceToken(token);
+    async function precheck(location:{latitude:number;longitude:number}|null){
+      if(location)setPatientLocation(location);
+      const supabase=createClient();
+      if(!supabase){if(active){setEligibilityError('Review generation is not configured.');setEligibilityChecking(false)}return}
+      const {data,error}=await supabase.functions.invoke('generate-review',{body:{doctor_id:doctor.id,device_token:token,precheck_only:true,...(location||{})}});
+      if(active){setEligibilityError(data?.error||error?.message||'');setEligibilityChecking(false)}
+    }
+    if(!navigator.geolocation){void precheck(null);return()=>{active=false}}
+    navigator.geolocation.getCurrentPosition(position=>void precheck({latitude:position.coords.latitude,longitude:position.coords.longitude}),()=>void precheck(null),{enableHighAccuracy:true,timeout:8000,maximumAge:60_000});
+    return()=>{active=false};
+  },[doctor.id]);
   const toggle = (
     value: string,
     current: string[],
@@ -117,6 +138,7 @@ export function ReviewExperience({
     setError("");
   }
   async function generate() {
+    if(eligibilityChecking||eligibilityError||!deviceToken)return;
     setLoading(true);
     setError("");
     const supabase = createClient();
@@ -137,6 +159,8 @@ export function ReviewExperience({
           rating,
           custom_notes: customNotes.trim() || null,
           language,
+          device_token:deviceToken,
+          ...(patientLocation||{}),
         },
       },
     );
@@ -273,7 +297,7 @@ export function ReviewExperience({
         <section className="mt-4 rounded-2xl bg-white p-4 shadow-lg shadow-slate-900/5 ring-1 ring-slate-200/70 sm:mt-6 sm:p-6">
           {isReviewCopied ? (
             <div className="py-8 text-center sm:py-12">
-              <span className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-emerald-100 text-emerald-700"><Check size={32} /></span>
+              <ThankYouAnimation />
               <h2 className="mt-5 text-2xl font-extrabold">Thank you for visiting!</h2>
               <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-600">Your review is copied. Open Google Maps and paste it to share your experience.</p>
               {doctor.gmb_review_link ? (
@@ -392,6 +416,8 @@ export function ReviewExperience({
               {error}
             </p>
           )}
+          {eligibilityChecking && <p role="status" className="mt-4 flex items-center justify-center gap-2 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-600"><Loader2 size={16} className="animate-spin"/>Verifying feedback eligibility…</p>}
+          {eligibilityError && <p role="alert" className="mt-4 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">{eligibilityError}</p>}
           {!reviews.length ? (
             <button
               type="button"
@@ -399,6 +425,8 @@ export function ReviewExperience({
                 !selectedExperiences.length ||
                 (topServices.length > 0 && !selectedServices.length) ||
                 loading
+                || eligibilityChecking
+                || !!eligibilityError
               }
               onClick={generate}
               style={{ background: theme.primary }}
