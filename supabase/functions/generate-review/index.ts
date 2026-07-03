@@ -108,8 +108,7 @@ Deno.serve(async(req)=>{
 
     const subscriptionTier=text(doctor.subscription_tier,'starter').toLowerCase();
     const isStarter=subscriptionTier==='starter';
-    const isGrowth=subscriptionTier==='growth';
-    const language=isStarter?'English':body.language==='hinglish'?'Hinglish (Latin script)':'English';
+    const language=body.language==='hinglish'?'Hinglish (Latin script)':'English';
 
     const kb=(doctor.knowledge_base&&typeof doctor.knowledge_base==='object'?doctor.knowledge_base:{}) as KB;
     const area=text(kb.area_name,'the local area'),city=text(kb.city_name,text(doctor.city,area)),specialty=text(doctor.specialization,'Doctor');
@@ -175,8 +174,7 @@ Selected aspect: ${aspects.join(', ')||'good care'}. Treatment permission: ${fla
 Patient rating: ${rating}/5. Patient factual note: ${customNotes||'None'}.
 Language: ${language}.
 Tone profile: ${personality}. ${personalities[personality]}
-${isStarter?'Use English only.':''}
-${isGrowth&&language.startsWith('Hinglish')?'Generate natural, high-converting Hinglish in Hindi written only in Latin script. Across the four variants, include natural Hinglish-led options as well as pure English options so the patient can choose. Avoid Devanagari and awkward literal translations.':''}
+${language.startsWith('Hinglish')?'Generate natural Hinglish in Hindi written only in Latin script. Across the four variants, use natural Hindi-English vocabulary without Devanagari or awkward literal translations.':''}
 
 CRITICAL: Never mention specific doctor or employee names. Use generic provider terms. Never invent a person, treatment outcome, waiting time, parking issue, seating issue, complaint, rating, or detail that the patient did not provide. Preserve the patient's actual ${rating}/5 rating and sentiment. ${flags.include_superlative?'A superlative may appear in at most one option and only when directly supported by the patient-selected wording.':'Do not use superlatives such as best, amazing, excellent, perfect, or outstanding.'}
 Do not begin any option with these recently used opening patterns: ${recentOpenings.length?recentOpenings.join(' | '):'none'}.
@@ -185,7 +183,7 @@ STRUCTURAL VARIATION RULES FOR THE FOUR VARIANTS:
 1. Option 1: ${sentenceRange(lengthBands[0])} sentences (${lengthBands[0]}), direct and conversational.
 2. Option 2: ${sentenceRange(lengthBands[1])} sentences (${lengthBands[1]}), focused on selected facts only.
 3. Option 3: ${sentenceRange(lengthBands[2])} sentences (${lengthBands[2]}), natural phrasing while preserving meaning.
-4. Option 4: ${sentenceRange(lengthBands[3])} sentences (${lengthBands[3]}), ${isGrowth&&language.startsWith('Hinglish')?'natural localized Hinglish using mixed Hindi-English vocabulary in Latin script.':'distinctly worded conversational English.'}
+4. Option 4: ${sentenceRange(lengthBands[3])} sentences (${lengthBands[3]}), ${language.startsWith('Hinglish')?'natural localized Hinglish using mixed Hindi-English vocabulary in Latin script.':'distinctly worded conversational English.'}
 
 CRITICAL OUTPUT RULES:
 Generate exactly ${targetCount} unique, distinct review variants separated by the tags [REVIEW] and [/REVIEW]. Vary lengths and perspectives naturally across the set. Reflect the rating honestly. If a patient note exists, preserve its factual meaning without exaggeration. Wrap every variant strictly inside [REVIEW] and [/REVIEW].
