@@ -35,13 +35,13 @@ const reviewBenefits=[
 ] as const;
 const choiceReasons=[
   {icon:ShieldCheck,title:"Built for Google Review Safety in 2026",copy:"Rolling 24-hour phrase limits, originality checks, and authentic-input guardrails reduce repetitive patterns and help protect the integrity of your Google Business Profile. No platform can guarantee immunity from Google enforcement."},
-  {icon:Languages,title:"Hinglish + Regional Vocabulary Support",copy:"Indian patients naturally mix Hindi and English. MediRank’s specialized Gemini configuration supports familiar Hinglish phrasing while preserving the patient’s selected facts and meaning."},
+  {icon:Languages,title:"Hinglish + Regional Vocabulary Support",copy:"Indian patients naturally mix Hindi and English. MediRank’s specialized Ai configuration supports familiar Hinglish phrasing while preserving the patient’s selected facts and meaning."},
   {icon:LockKeyhole,title:"Privacy-Locked Device Verification",copy:"A privacy-safe hashed device token applies a seven-day, per-clinic generation lock to discourage repeated submissions by staff, competitors, or the same device."},
 ] as const;
 const conversionSteps=[
-  {icon:Navigation,number:"01",title:"Smart GPS Guarded Scan",copy:"The patient scans the clinic QR at reception. A token-free preflight checks eligibility and, when clinic coordinates and location permission are available, verifies the device is within 500 metres."},
-  {icon:WandSparkles,number:"02",title:"No-Brainer AI Review Generation",copy:"The patient selects one or two visit highlights and receives four natural variations grounded only in those selections and their actual rating."},
-  {icon:Copy,number:"03",title:"Natural Click-Path Paste",copy:"Copying a review opens the dedicated Thank You state with the custom animation, then clearly guides the patient to Google Maps—without auto-posting."},
+  {icon:Navigation,number:"01",title:"Smart Verification Scan",copy:"The patient scans your clinic’s custom QR code at the reception. Our intelligent system automatically verifies the visit instantly and seamlessly prepares a localized feedback session tailored to your practice branch—ensuring only real, physical footfall is converted into profile visibility"},
+  {icon:WandSparkles,number:"02",title:"One-Click Smart Variations",copy:"The patient effortlessly selects 1 or 2 quick highlights of their visit (like friendly staff or painless treatment). MediRank instantly generates authentic, highly personalized drafts that match true patient experiences, removing all typing friction completely."},
+  {icon:Copy,number:"03",title:"Seamless Organic Publishing",copy:"Once the patient selects their preferred draft, they are beautifully guided forward to your official Google Maps profile. With a natural and intuitive click-path, pasting their real experience takes less than 2 seconds, boosting your local ranking safely."},
 ] as const;
 
 export default function Home(){return <>
