@@ -43,8 +43,7 @@ function parseReviews(raw:unknown,expectedCount:number):string[]{
 }
 
 Deno.serve(async(req)=>{
-  let targetCount=Math.floor(Math.random()*3)+2;
-  if(Math.random()<0.15)targetCount=5;
+  let targetCount=4;
   if(req.method==='OPTIONS')return reply({ok:true});
   if(req.method!=='POST')return reply({error:'Method not allowed.'});
   try{
@@ -55,17 +54,19 @@ Deno.serve(async(req)=>{
     const url=Deno.env.get('SUPABASE_URL'),serviceKey=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),geminiKey=Deno.env.get('GEMINI_API_KEY');
     if(!url||!serviceKey||!geminiKey){console.error('Missing Edge Function secrets',{hasUrl:!!url,hasServiceKey:!!serviceKey,hasGeminiKey:!!geminiKey});return reply({error:'Review service is not configured.'})}
     const db=createClient(url,serviceKey);
-    const {data:doctor,error:doctorError}=await db.from('doctors').select('id,doctor_name,clinic_name,city,specialization,knowledge_base,subscription_tier').eq('id',doctorId).eq('is_active',true).maybeSingle();
+    const {data:doctor,error:doctorError}=await db.from('doctors').select('id,city,specialization,knowledge_base,subscription_tier').eq('id',doctorId).eq('is_active',true).maybeSingle();
     if(doctorError){console.error('Doctor lookup failed',doctorError);return reply({error:'Unable to load clinic details.'})}
     if(!doctor)return reply({error:'Clinic not found.'});
 
     const subscriptionTier=text(doctor.subscription_tier,'starter').toLowerCase();
     const isStarter=subscriptionTier==='starter';
-    if(isStarter)targetCount=2;
+    const isGrowth=subscriptionTier==='growth';
     const language=isStarter?'English':body.language==='hinglish'?'Hinglish (Latin script)':'English';
 
     const kb=(doctor.knowledge_base&&typeof doctor.knowledge_base==='object'?doctor.knowledge_base:{}) as KB;
-    const clinic=text(doctor.clinic_name,'the clinic'),area=text(kb.area_name,clinic),city=text(kb.city_name,text(doctor.city,area)),specialty=text(doctor.specialization,'Doctor');
+    const area=text(kb.area_name,'the local area'),city=text(kb.city_name,text(doctor.city,area)),specialty=text(doctor.specialization,'Doctor');
+    const specialtyLower=specialty.toLowerCase();
+    const providerTerm=specialtyLower.includes('dent')?'the dentist':specialtyLower.includes('physician')||specialtyLower.includes('medicine')?'the physician':'the specialist';
     const services=list(kb.top_services);
     const legacyTreatment=text(body.selected_treatment_keyword);
     const requested=[...list(body.selected_treatments),...list(body.selected_services)];
@@ -73,14 +74,14 @@ Deno.serve(async(req)=>{
     let treatments=requested
       .filter((item,index,items)=>items.findIndex(candidate=>candidate.toLowerCase()===item.toLowerCase())===index)
       .filter(item=>services.some(service=>service.toLowerCase()===item.toLowerCase()))
-      .slice(0,isStarter?3:2);
+      .slice(0,3);
     const {data:keywordRows,error:keywordError}=await db.from('doctor_keywords').select('keyword').eq('doctor_id',doctor.id);
     if(keywordError)console.error('Keyword lookup failed',keywordError);
     const allowed=new Set((keywordRows||[]).map(item=>text(item.keyword).toLowerCase()).filter(Boolean));
     let aspects=[...list(body.selected_keywords),...list(body.selected_experiences)]
       .filter((item,index,items)=>items.findIndex(candidate=>candidate.toLowerCase()===item.toLowerCase())===index)
       .filter(item=>allowed.has(item.toLowerCase()))
-      .slice(0,isStarter?3:2);
+      .slice(0,3);
     if(isStarter){
       // Starter accounts may send at most three combined treatment/experience
       // keywords. Treatments retain priority, then remaining aspect slots.
@@ -96,15 +97,25 @@ Deno.serve(async(req)=>{
     if(countError)console.error('Rate-limit lookup failed',countError);
     if((count||0)>=15)return reply({error:'Hourly limit reached. Please try again soon.'});
 
-    const prompt=`Act as an authentic patient writing a Google review.
-Doctor: ${text(doctor.doctor_name,'the doctor')}, Clinic: ${clinic}, Area: ${area}, City: ${city}.
+    const prompt=`Help a real patient draft an honest Google review based only on the factual details they selected.
+Location: ${area}, ${city}. Service category: ${specialty}. Refer to the care provider only as ${providerTerm} or "the clinical staff".
 Selected aspect: ${aspects.join(', ')||'good care'}. Selected treatment: ${selectedTreatment}.
 Patient rating: ${rating}/5. Patient factual note: ${customNotes||'None'}.
 Language: ${language}.
-${isStarter?'Since the user is on the Starter Plan, generate exactly 2 review variations, no more. Use English only.':''}
+${isStarter?'Use English only.':''}
+${isGrowth&&language.startsWith('Hinglish')?'Generate natural, high-converting Hinglish in Hindi written only in Latin script. Across the four variants, include natural Hinglish-led options as well as pure English options so the patient can choose. Avoid Devanagari and awkward literal translations.':''}
+
+CRITICAL: Never mention specific doctor names, employee names, or terms like "Dr. Avinash" or "Dr. Verma". Use generic terms like "the specialist", "the clinical staff", "the dentist", or "the physician" depending on the service category. Never invent a person, treatment outcome, or detail that the patient did not provide.
+
+STRUCTURAL VARIATION RULES FOR THE FOUR VARIANTS:
+1. One ultra-short, casual, single-line review.
+2. Two or three short lines focused only on clinic hygiene or wait time; use only facts present in the selected inputs and omit unsupported claims.
+3. A direct conversational review with naturally imperfect grammar, while preserving the patient's meaning.
+4. ${isGrowth&&language.startsWith('Hinglish')?'Natural localized Hinglish using mixed Hindi-English vocabulary in Latin script.':'A distinctly worded, concise conversational English review.'}
 
 CRITICAL OUTPUT RULES:
 Generate exactly ${targetCount} unique, distinct review variants separated by the tags [REVIEW] and [/REVIEW]. Vary lengths and perspectives naturally across the set. Reflect the rating honestly. If a patient note exists, preserve its factual meaning without exaggeration. Wrap every variant strictly inside [REVIEW] and [/REVIEW].
+Write a short, conversational, and raw Indian customer style review. For each variant, use ONLY 2 or 3 of the injected keywords naturally. Do not stuff all terms into a single sentence. Keep every review under 2-3 lines so it passes human review validation.
 Do not include any introduction, JSON, markdown, or surrounding conversational phrases.`;
     let reviews:string[]=[];
     for(const model of ['gemini-2.5-flash']){
@@ -119,7 +130,6 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
         const textResponse=(envelope as {candidates?:Array<{content?:{parts?:Array<{text?:string}>}}>})?.candidates?.[0]?.content?.parts?.[0]?.text;
         console.log('Raw Gemini Output:',textResponse);
         reviews=parseReviews(textResponse,targetCount);
-        if(isStarter)reviews=reviews.slice(0,2);
         if(reviews.length===targetCount)break;
         console.error('Gemini returned invalid review count',{model,targetCount,count:reviews.length,raw:textResponse});
       }catch(error){console.error('Gemini request threw',{model,error:error instanceof Error?error.message:String(error)})}

@@ -41,7 +41,9 @@ export async function POST(request: Request) {
       }).eq("id", payment.id);
       if (paymentUpdateError) throw paymentUpdateError;
 
-      const { error: doctorUpdateError } = await admin.from("doctors").update({ plan: payment.plan, subscription_tier: payment.plan }).eq("id", payment.doctor_id);
+      const planStartedAt = new Date();
+      const planExpiresAt = new Date(planStartedAt.getTime() + 30 * 24 * 60 * 60 * 1000);
+      const { error: doctorUpdateError } = await admin.from("doctors").update({ plan: payment.plan, subscription_tier: payment.plan, plan_started_at: planStartedAt.toISOString(), plan_expires_at: planExpiresAt.toISOString(), total_scans_used: 0 }).eq("id", payment.doctor_id);
       if (doctorUpdateError) throw doctorUpdateError;
     }
 

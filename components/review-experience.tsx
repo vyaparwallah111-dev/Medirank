@@ -35,12 +35,14 @@ export function ReviewExperience({
   topServices,
   scanId,
   isStarter,
+  isGrowth,
 }: {
   doctor: Doctor;
   experienceKeywords: string[];
   topServices: string[];
   scanId: string | null;
   isStarter: boolean;
+  isGrowth: boolean;
 }) {
   const theme = { ...fallback, ...doctor.theme_config };
   const style = {
@@ -56,10 +58,10 @@ export function ReviewExperience({
   const [reviewsByLanguage, setReviewsByLanguage] = useState<
     Record<Language, string[]>
   >({ english: [], hinglish: [] });
-  const [choice, setChoice] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [isReviewCopied, setIsReviewCopied] = useState(false);
   const [error, setError] = useState("");
+  const [selectionMessage, setSelectionMessage] = useState("");
   const reviews = reviewsByLanguage[language];
   const initials = doctor.doctor_name
     .replace(/^dr\.?\s*/i, "")
@@ -73,14 +75,45 @@ export function ReviewExperience({
     current: string[],
     set: (items: string[]) => void,
   ) => {
-    if (current.includes(value)) set(current.filter((item) => item !== value));
-    else if (current.length < 2 && (!isStarter || selectedExperiences.length + selectedServices.length < 3)) set([...current, value]);
+    if (current.includes(value)) {
+      set(current.filter((item) => item !== value));
+      setSelectionMessage("");
+      return;
+    }
+    const starterCombinedLimit=isStarter&&selectedExperiences.length+selectedServices.length>=3;
+    if(current.length>=3||starterCombinedLimit){
+      setSelectionMessage("Max 3 options allowed for a natural review.");
+      return;
+    }
+    set([...current,value]);
+    setSelectionMessage("");
   };
+
+  function shuffled(items:string[]){
+    const result=[...items];
+    for(let index=result.length-1;index>0;index--){
+      const swap=Math.floor(Math.random()*(index+1));
+      [result[index],result[swap]]=[result[swap],result[index]];
+    }
+    return result;
+  }
+
+  function finalizedSelections(){
+    const experiences=shuffled(selectedExperiences);
+    const services=shuffled(selectedServices);
+    const roll=Math.random();
+    if(roll<0.7)return {experiences:experiences.slice(0,2),services:services.slice(0,2)};
+    if(roll<0.9){
+      const experienceLight=Math.random()<0.5;
+      return {experiences:experiences.slice(0,experienceLight?1:2),services:services.slice(0,experienceLight?2:1)};
+    }
+    const useAll=Math.random()<0.5;
+    return {experiences:experiences.slice(0,useAll?3:1),services:services.slice(0,useAll?3:1)};
+  }
   function changeLanguage(value: Language) {
     if (isStarter && value !== "english") return;
     setLanguage(value);
-    setChoice(0);
-    setCopied(false);
+    setIsReviewCopied(false);
     setError("");
   }
   async function generate() {
@@ -92,14 +125,15 @@ export function ReviewExperience({
       setLoading(false);
       return;
     }
+    const finalized=finalizedSelections();
     const { data, error: invokeError } = await supabase.functions.invoke(
       "generate-review",
       {
         body: {
           doctor_id: doctor.id,
-          selected_keywords: selectedExperiences,
-          selected_treatments: selectedServices,
-          selected_treatment_keyword: selectedServices[0] || null,
+          selected_keywords: finalized.experiences,
+          selected_treatments: finalized.services,
+          selected_treatment_keyword: finalized.services[0] || null,
           rating,
           custom_notes: customNotes.trim() || null,
           language,
@@ -134,16 +168,27 @@ export function ReviewExperience({
       });
     setLoading(false);
   }
-  async function post() {
-    await navigator.clipboard.writeText(reviews[choice]);
-    setCopied(true);
+  /*
+   * Review-compliance guardrail (Google Maps / FTC consumer-review rules):
+   * these hooks must never award coins, tokens, discounts, micro-rewards, or
+   * any other benefit for copying, posting, rating, or expressing sentiment.
+   * Navigation remains an explicit user action and no review is auto-posted.
+   */
+  async function copyReview(index: number) {
+    await navigator.clipboard.writeText(reviews[index]);
+    setIsReviewCopied(true);
     const supabase = createClient();
     if (supabase && scanId)
       void supabase.functions.invoke("mark-scan", {
         body: { scan_id: scanId, event: "copied" },
       });
-    if (doctor.gmb_review_link)
-      setTimeout(() => window.open(doctor.gmb_review_link!, "_blank"), 400);
+  }
+  function trackGoogleProceed() {
+    const supabase = createClient();
+    if (supabase && scanId)
+      void supabase.functions.invoke("mark-scan", {
+        body: { scan_id: scanId, event: "posted" },
+      });
   }
   const Chip = ({
     value,
@@ -180,26 +225,27 @@ export function ReviewExperience({
   return (
     <main
       style={style}
-      className={`min-h-[100dvh] bg-[var(--patient-bg)] px-3 pt-3 text-slate-950 sm:px-5 sm:pt-5 ${isStarter ? "pb-20 sm:pb-20" : "pb-8 sm:pb-12"}`}
+      className={`min-h-[100dvh] bg-[var(--patient-bg)] px-3 pt-3 text-slate-950 sm:px-5 sm:pt-5 ${isStarter || isGrowth ? "pb-20 sm:pb-20" : "pb-8 sm:pb-12"}`}
     >
       <div className="mx-auto w-full max-w-xl">
         <a
-          href="https://DocRevu.vyaparwallah.com"
+          href="https://medirank.vyaparwallah.com"
           target="_blank"
           rel="noreferrer"
-          className="flex min-h-12 items-center justify-center gap-1.5 rounded-2xl bg-white px-3 text-center text-sm font-extrabold shadow-sm ring-1 ring-slate-200/70 sm:text-base"
+          className="brand-intro relative flex min-h-12 flex-nowrap items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-2xl bg-white px-2 text-center text-[clamp(0.75rem,3.7vw,1rem)] font-extrabold shadow-sm ring-1 ring-slate-200/70 sm:gap-1.5 sm:px-3"
         >
-          <span style={{ color: theme.primary }}>MediRank</span>
-          <span className="text-slate-500">By</span>
-          <span>VyaparWallah.com</span>
-          <ExternalLink size={14} className="text-slate-400" />
+          <span className="relative z-10 text-[#0A4C95]">MediRank</span>
+          <span className="relative z-10 text-slate-500">by</span>
+          <span className="relative z-10 text-[#0A4C95]">Vyapar</span>
+          <span className="relative z-10 text-[#F37021]">Wallah</span>
+          <ExternalLink size={14} className="shrink-0 text-slate-400" />
         </a>
         <header className="px-2 pb-2 pt-6 text-center sm:pt-8">
-          {doctor.logo_url ? (
+          {!isStarter && doctor.logo_url ? (
             <img
               src={doctor.logo_url}
               alt={doctor.clinic_name}
-              className="mx-auto h-16 w-16 rounded-2xl object-cover shadow-sm sm:h-20 sm:w-20"
+              className="mx-auto h-16 w-16 rounded-2xl bg-white object-contain p-1 shadow-sm ring-1 ring-slate-200/70 sm:h-20 sm:w-20"
             />
           ) : (
             <span
@@ -225,6 +271,18 @@ export function ReviewExperience({
           </p>
         </header>
         <section className="mt-4 rounded-2xl bg-white p-4 shadow-lg shadow-slate-900/5 ring-1 ring-slate-200/70 sm:mt-6 sm:p-6">
+          {isReviewCopied ? (
+            <div className="py-8 text-center sm:py-12">
+              <span className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-emerald-100 text-emerald-700"><Check size={32} /></span>
+              <h2 className="mt-5 text-2xl font-extrabold">Thank you for visiting!</h2>
+              <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-600">Your review is copied. Open Google Maps and paste it to share your experience.</p>
+              {doctor.gmb_review_link ? (
+                <a href={doctor.gmb_review_link} target="_blank" rel="noreferrer" onClick={trackGoogleProceed} style={{ background: theme.primary }} className="mt-6 flex min-h-14 w-full items-center justify-center gap-2 rounded-xl px-5 text-base font-bold text-white shadow-lg">Open Google Maps to Paste Review <ExternalLink size={18} /></a>
+              ) : (
+                <p className="mt-6 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-700">Google Maps link is not configured for this clinic.</p>
+              )}
+            </div>
+          ) : <>
           <div className="mb-6 border-b border-slate-100 pb-6 text-center">
             <p className="font-bold">How would you rate your visit?</p>
             <div className="mt-3 flex justify-center gap-2" role="radiogroup" aria-label="Visit rating">
@@ -247,7 +305,7 @@ export function ReviewExperience({
               </p>
             </div>
             <span className="text-xs font-semibold text-slate-400">
-              {selectedExperiences.length}/2
+              {selectedExperiences.length}/3
             </span>
           </div>
           {experienceKeywords.length ? (
@@ -268,6 +326,7 @@ export function ReviewExperience({
               No experience options configured yet.
             </p>
           )}
+          {selectionMessage && <p role="status" className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">{selectionMessage}</p>}
           <div className="mt-6 border-t border-slate-100 pt-6">
             <div className="flex items-end justify-between">
               <div>
@@ -277,7 +336,7 @@ export function ReviewExperience({
                 </p>
               </div>
               <span className="text-xs font-semibold text-slate-400">
-                {selectedServices.length}/2
+                {selectedServices.length}/3
               </span>
             </div>
             {topServices.length ? (
@@ -371,66 +430,34 @@ export function ReviewExperience({
               </div>
               <div className="mt-4 space-y-3">
                 {reviews.map((review, index) => (
-                  <button
-                    type="button"
-                    key={index}
-                    onClick={() => setChoice(index)}
-                    style={
-                      choice === index
-                        ? {
-                            borderColor: theme.primary,
-                            boxShadow: `0 0 0 2px ${theme.primary}22`,
-                          }
-                        : undefined
-                    }
-                    className="min-h-24 w-full rounded-2xl border border-slate-200 bg-white p-4 text-left text-sm leading-6"
-                  >
+                  <div key={index} className="rounded-2xl border border-slate-200 p-4">
                     <div style={{ color: theme.accent }} className="flex gap-1">
                       {Array.from({ length: 5 }).map((_, j) => (
                         <Star key={j} fill="currentColor" size={13} />
                       ))}
                     </div>
-                    <p className="mt-2.5">{review}</p>
-                  </button>
+                    <p className="mt-2.5 text-sm leading-6">{review}</p>
+                    <button type="button" onClick={() => copyReview(index)} style={{ background: theme.primary }} className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-bold text-white shadow-md">
+                      <Clipboard size={18} /> Copy Review
+                    </button>
+                  </div>
                 ))}
               </div>
-              <button
-                type="button"
-                onClick={post}
-                style={{ background: theme.primary }}
-                className="mt-5 flex min-h-14 w-full items-center justify-center gap-2 rounded-xl px-5 text-base font-bold text-white shadow-lg"
-              >
-                {copied ? (
-                  <>
-                    <Check size={20} />
-                    Copied
-                    {doctor.gmb_review_link
-                      ? "! Opening Google…"
-                      : " to clipboard"}
-                  </>
-                ) : (
-                  <>
-                    <Clipboard size={20} />
-                    Copy & post on Google
-                  </>
-                )}
-              </button>
             </div>
           )}
+          </>}
         </section>
-        <footer className="px-2 pt-7 text-center text-xs text-slate-500">
-          Powered by <b>MediRank</b> ·{" "}
+        <footer className="px-2 pt-7 text-center text-sm font-bold text-slate-600">
           <a
-            href="https://DocRevu.vyaparwallah.com"
+            href="https://www.vyaparwallah.com/digital-marketing-for-doctors"
             target="_blank"
             rel="noreferrer"
-            className="font-extrabold underline underline-offset-2"
+            className="inline-flex gap-1 underline-offset-2 hover:underline"
           >
-            Vyapar Wallah
+            <span>Powered by</span> <span className="text-[#0A4C95]">Vyapar</span> <span className="text-[#F37021]">Wallah</span>
           </a>
         </footer>
       </div>
-      {isStarter && <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-4 py-3 text-center text-sm font-extrabold text-slate-700 shadow-[0_-8px_24px_rgba(15,23,42,.08)] backdrop-blur">Powered by Vyapar Wallah</div>}
     </main>
   );
 }

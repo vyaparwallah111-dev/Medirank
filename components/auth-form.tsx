@@ -45,7 +45,22 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
       setLoading(false);
       return;
     }
-    router.push(mode === "signup" ? "/onboarding" : "/dashboard");
+    let destination = mode === "signup" ? "/onboarding" : "/dashboard";
+    if (mode === "login" && result.data.user) {
+      const { data: profile } = await s
+        .from("doctors")
+        .select("is_admin,is_active")
+        .eq("auth_user_id", result.data.user.id)
+        .maybeSingle();
+      if (profile?.is_active === false) {
+        await s.auth.signOut();
+        setError("Your account is suspended. Please contact support.");
+        setLoading(false);
+        return;
+      }
+      if (profile?.is_admin === true) destination = "/admin/dashboard";
+    }
+    router.push(destination);
     router.refresh();
   }
   return (

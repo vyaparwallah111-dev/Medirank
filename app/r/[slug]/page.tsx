@@ -23,7 +23,9 @@ export default async function PatientPage({params}:PageProps){
     const {data:doctor,error}=await supabase.from('doctors').select('id,doctor_name,clinic_name,specialization,slug,gmb_review_link,logo_url,theme_config,knowledge_base,subscription_tier').eq('slug',resolvedSlug).eq('is_active',true).maybeSingle();
     if(error){console.error('Patient page doctor lookup failed:',error.message);return unavailable()}
     if(!doctor)notFound();
-    const isStarter=(typeof doctor.subscription_tier==='string'?doctor.subscription_tier.trim().toLowerCase():'starter')==='starter';
+    const subscriptionTier=typeof doctor.subscription_tier==='string'?doctor.subscription_tier.trim().toLowerCase():'starter';
+    const isStarter=subscriptionTier==='starter';
+    const isGrowth=subscriptionTier==='growth';
     if(isStarter){
       const {count:scanCount,error:scanCountError}=await supabase.from('scans').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id);
       if(scanCountError){console.error('Patient page scan limit lookup failed:',scanCountError.message);return unavailable()}
@@ -43,7 +45,9 @@ export default async function PatientPage({params}:PageProps){
     ]);
     const keywords=keywordResult.status==='fulfilled'?(keywordResult.value.data??[]):[];
     const scan=scanResult.status==='fulfilled'?scanResult.value.data:null;
-    return <ReviewExperience doctor={doctor} isStarter={isStarter} scanId={scan?.id??null} experienceKeywords={keywords.filter(item=>item.category!=='treatment').map(item=>item.keyword).filter(Boolean)} topServices={knowledgeBase.top_services}/>;
+    const treatmentKeywords=keywords.filter(item=>item.category==='treatment').map(item=>item.keyword).filter(Boolean);
+    const topServices=Array.from(new Set<string>([...knowledgeBase.top_services,...treatmentKeywords]));
+    return <ReviewExperience doctor={doctor} isStarter={isStarter} isGrowth={isGrowth} scanId={scan?.id??null} experienceKeywords={keywords.filter(item=>item.category!=='treatment').map(item=>item.keyword).filter(Boolean)} topServices={topServices}/>;
   }catch(error){
     // Preserve Next.js navigation signals such as notFound().
     if(error&&typeof error==='object'&&'digest' in error)throw error;

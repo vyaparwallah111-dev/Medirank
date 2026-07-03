@@ -3,31 +3,27 @@
 import { revalidatePath } from 'next/cache';
 import { getAuthenticatedUser, getCurrentDoctor } from '@/lib/dashboard';
 
-export async function createQrCodeRecord() {
+export type CreateQrState = { error: string | null };
+
+export async function createQrCodeRecord(_state: CreateQrState, _formData: FormData): Promise<CreateQrState> {
   const doctor = await getCurrentDoctor();
   const { supabase, user } = await getAuthenticatedUser();
   if (doctor.auth_user_id !== user.id) throw new Error('Forbidden');
 
-  // subscription_tier is the canonical plan field. Repair legacy/null records
-  // before QR insertion so database triggers never receive a null tier.
   const subscriptionTier = doctor.subscription_tier?.trim().toLowerCase() || 'starter';
-  if (!doctor.subscription_tier) {
-    const { error: tierError } = await supabase
-      .from('doctors')
-      .update({ subscription_tier: 'starter' })
-      .eq('id', doctor.id)
-      .eq('auth_user_id', user.id);
-    if (tierError) throw new Error('Unable to initialize your Starter plan.');
-  }
 
   const { count, error: countError } = await supabase
     .from('qr_codes')
     .select('*', { count: 'exact', head: true })
     .eq('doctor_id', doctor.id);
-  if (countError) throw new Error('Unable to check your QR code allowance.');
+  if (countError) {
+    console.error('Unable to check QR allowance:', countError.code, countError.message);
+    return { error: 'QR service is not ready. Please refresh and try again.' };
+  }
 
-  if (subscriptionTier === 'starter' && (count ?? 0) >= 1) throw new Error('Starter plan limit reached (Max 1 QR code). Please upgrade your plan.');
-  if ((count ?? 0) >= 1) return;
+  if (subscriptionTier === 'starter' && (count ?? 0) >= 1) {
+    return { error: 'Starter plan limit reached (Max 1 QR code). Please upgrade your plan.' };
+  }
 
   const origin = (process.env.NEXT_PUBLIC_APP_URL || '').replace(/\/$/, '');
   const targetUrl = `${origin}/r/${encodeURIComponent(doctor.slug)}`;
@@ -36,6 +32,10 @@ export async function createQrCodeRecord() {
     storage_path: `generated/${doctor.id}/review-qr`,
     target_url: targetUrl,
   });
-  if (error) throw new Error('Unable to create your QR code.');
+  if (error) {
+    console.error('Unable to create QR code:', error.code, error.message);
+    return { error: 'Unable to create your QR code. Please try again.' };
+  }
   revalidatePath('/dashboard/qr-code');
+  return { error: null };
 }

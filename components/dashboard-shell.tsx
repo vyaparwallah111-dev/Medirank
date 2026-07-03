@@ -11,6 +11,7 @@ const nav = [
   [QrCode, "My QR Code", "/dashboard/qr-code"],
   [KeyRound, "Review keywords", "/dashboard/keywords"],
   [Settings, "Clinic profile", "/dashboard/profile"],
+  [HelpCircle, "Help & support", "/dashboard/support"],
 ] as const;
 
 export function DashboardShell({ children, doctor }: {
@@ -19,8 +20,6 @@ export function DashboardShell({ children, doctor }: {
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  const isStarter = (doctor.subscription_tier?.trim().toLowerCase() || "starter") === "starter";
-
   async function logout() {
     await createClient()?.auth.signOut();
     router.push("/login");
@@ -39,17 +38,7 @@ export function DashboardShell({ children, doctor }: {
           ))}
         </nav>
         <div className="mt-auto border-t pt-4">
-          {isStarter ? (
-            <div className="rounded-xl bg-slate-50 px-3 py-3 text-slate-600">
-              <span className="flex items-center gap-3 text-sm font-semibold"><HelpCircle size={19} />Help & support</span>
-              <a href="mailto:support@vyaparwallah.com" className="mt-2 block text-xs font-bold text-slate-500 hover:text-brand">
-                Support: Email Only (support@vyaparwallah.com)
-              </a>
-            </div>
-          ) : (
-            <a href="mailto:support@vyaparwallah.com" className="flex w-full items-center gap-3 px-3 py-3 text-sm font-semibold text-slate-500"><HelpCircle size={19} />Help & support</a>
-          )}
-          <button onClick={logout} className="flex w-full items-center gap-3 px-3 py-3 text-sm font-semibold text-slate-500"><LogOut size={19} />Log out</button>
+          <button onClick={logout} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 hover:text-red-700"><LogOut size={19} />Log out</button>
         </div>
       </aside>
       <div className="lg:pl-64">

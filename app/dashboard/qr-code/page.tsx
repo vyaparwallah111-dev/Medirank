@@ -2,14 +2,14 @@ import Link from 'next/link';
 import { LockKeyhole, QrCode } from 'lucide-react';
 import { getAuthenticatedUser, getCurrentDoctor } from '@/lib/dashboard';
 import { QRDownload } from '@/components/qr-download';
-import { createQrCodeRecord } from './actions';
+import { CreateQrForm } from '@/components/create-qr-form';
 
 export const dynamic = 'force-dynamic';
 
 export default async function QRCodePage() {
   const doctor = await getCurrentDoctor();
   const { supabase } = await getAuthenticatedUser();
-  const { count } = await supabase.from('qr_codes').select('*', { count: 'exact', head: true }).eq('doctor_id', doctor.id);
+  const { count, error: qrError } = await supabase.from('qr_codes').select('*', { count: 'exact', head: true }).eq('doctor_id', doctor.id);
   const qrCount = count ?? 0;
   const subscriptionTier = doctor.subscription_tier?.trim().toLowerCase() || 'starter';
   const isStarter = subscriptionTier === 'starter';
@@ -36,7 +36,7 @@ export default async function QRCodePage() {
           <span className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-blue-50 text-brand"><QrCode size={32} /></span>
           <h2 className="mt-5 text-xl font-bold">Create your patient review QR</h2>
           <p className="mt-2 text-sm text-slate-500">Your Starter plan includes one reusable clinic QR code.</p>
-          <form action={createQrCodeRecord}><button className="btn-primary mt-6 min-h-12 w-full">Create New QR</button></form>
+          {qrError ? <p role="alert" className="mt-6 text-sm font-semibold text-red-600">QR service is not ready. Please refresh and try again.</p> : <CreateQrForm />}
         </div>
       )}
     </div>
