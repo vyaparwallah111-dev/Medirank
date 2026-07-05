@@ -41,6 +41,26 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
     const form = new FormData(event.currentTarget);
     const nextCredentials = { email: String(form.get("email")).trim().toLowerCase(), password: String(form.get("password")) };
     try {
+      if (mode === "login") {
+        const response = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(nextCredentials),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Unable to log in.");
+        const supabase = createClient();
+        if (!supabase) throw new Error("Supabase is not configured.");
+        const { error: sessionError } = await supabase.auth.setSession({
+          access_token: result.accessToken,
+          refresh_token: result.refreshToken,
+        });
+        if (sessionError) throw sessionError;
+        router.replace(result.destination);
+        router.refresh();
+        return;
+      }
+
       await sendOtp(nextCredentials.email);
       setCredentials(nextCredentials);
       setStep("otp");
@@ -125,7 +145,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
         <input id={`${mode}-password`} name="password" type="password" minLength={6} className="input" placeholder="At least 6 characters" autoComplete={mode === "login" ? "current-password" : "new-password"} required />
       </div>
       {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-      <button className="btn-primary min-h-12 w-full" disabled={loading}>{loading ? <Loader2 className="animate-spin" size={18} /> : <>{mode === "login" ? "Continue to verification" : "Verify and create account"}<ArrowRight size={18} /></>}</button>
+      <button className="btn-primary min-h-12 w-full" disabled={loading}>{loading ? <Loader2 className="animate-spin" size={18} /> : <>{mode === "login" ? "Log in" : "Verify and create account"}<ArrowRight size={18} /></>}</button>
       <p className="text-center text-sm text-slate-500">{mode === "login" ? "New to MediRank?" : "Already have an account?"}{" "}<Link className="font-bold text-brand" href={mode === "login" ? "/signup" : "/login"}>{mode === "login" ? "Create account" : "Log in"}</Link></p>
     </form>
   );
