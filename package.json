@@ -5,9 +5,13 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "postbuild": "node scripts/prepare-standalone.mjs",
+    "start": "node .next/standalone/server.js",
     "lint": "next lint",
     "test": "next test"
+  },
+  "engines": {
+    "node": ">=20 <21"
   },
   "dependencies": {
     "@supabase/ssr": "^0.6.1",
