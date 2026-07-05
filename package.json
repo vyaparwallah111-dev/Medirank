@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "postbuild": "node scripts/prepare-standalone.mjs",
-    "start": "node .next/standalone/server.js",
+    "start": "node --v8-pool-size=1 .next/standalone/server.js",
     "lint": "next lint",
     "test": "next test"
   },
