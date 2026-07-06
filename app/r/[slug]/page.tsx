@@ -45,6 +45,12 @@ export default async function PatientPage({params}:PageProps){
     ]);
     const keywords=keywordResult.status==='fulfilled'?(keywordResult.value.data??[]):[];
     const scan=scanResult.status==='fulfilled'?scanResult.value.data:null;
+    if(scan?.id){
+      const {error:analyticsError}=await supabase.from('analytics_events').upsert({doctor_id:doctor.id,scan_id:scan.id,event_type:'scan'},{onConflict:'scan_id,event_type'});
+      if(analyticsError)console.error('Patient page scan analytics insert failed:',analyticsError.message);
+    }else if(scanResult.status==='rejected'){
+      console.error('Patient page scan session insert failed:',scanResult.reason);
+    }
     const treatmentKeywords=keywords.filter(item=>item.category==='treatment').map(item=>item.keyword).filter(Boolean);
     const topServices=Array.from(new Set<string>([...knowledgeBase.top_services,...treatmentKeywords]));
     return <ReviewExperience doctor={doctor} isStarter={isStarter} isGrowth={isGrowth} scanId={scan?.id??null} experienceKeywords={keywords.filter(item=>item.category!=='treatment').map(item=>item.keyword).filter(Boolean)} topServices={topServices}/>;
