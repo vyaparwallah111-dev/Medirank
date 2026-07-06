@@ -8,6 +8,8 @@ Responsive multi-tenant review collection website for doctors and clinics, built
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    - `SUPABASE_SERVICE_ROLE_KEY` (server/admin use only)
+   - `MAILGUN_API_KEY`, `MAILGUN_DOMAIN`, and `MAILGUN_REGION` (`US` or `EU`)
+   - `MAILGUN_SENDER_EMAIL` and `MAILGUN_SENDER_NAME`
    - `NEXT_PUBLIC_SITE_URL`
 2. Run the SQL files in `supabase/migrations` in numeric order in the Supabase SQL editor.
 3. Create public Storage buckets named `qr-codes` and `clinic-logos` and add policies appropriate to your project.
