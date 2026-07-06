@@ -19,7 +19,7 @@ export async function POST(request: Request) {
     const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     if (!admin || !url || !anonKey) return NextResponse.json({ error: "Authentication is unavailable." }, { status: 503 });
 
-    const { data: challenge, error: challengeError } = await admin.from("auth_otps").select("id,otp_code,expires_at,attempts,is_verified").eq("email", input.email).eq("auth_mode", input.mode).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    const { data: challenge, error: challengeError } = await admin.from("auth_otps").select("id,otp_code,expires_at,attempts,is_verified").eq("email", input.email).order("created_at", { ascending: false }).limit(1).maybeSingle();
     if (challengeError) throw challengeError;
     if (!challenge || challenge.is_verified) return NextResponse.json({ error: "This verification code is invalid or has already been used." }, { status: 400 });
     if (new Date(challenge.expires_at).getTime() <= Date.now()) return NextResponse.json({ error: "This verification code has expired. Request a new one." }, { status: 410 });
@@ -29,7 +29,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "The verification code is incorrect." }, { status: 400 });
     }
 
-    const { data: claimed, error: verifiedError } = await admin.from("auth_otps").update({ is_verified: true, verified_at: new Date().toISOString() }).eq("id", challenge.id).eq("is_verified", false).select("id").maybeSingle();
+    const { data: claimed, error: verifiedError } = await admin.from("auth_otps").update({ is_verified: true }).eq("id", challenge.id).eq("is_verified", false).select("id").maybeSingle();
     if (verifiedError) throw verifiedError;
     if (!claimed) return NextResponse.json({ error: "This verification code has already been used." }, { status: 409 });
 

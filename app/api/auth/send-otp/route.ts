@@ -31,12 +31,20 @@ export async function POST(request: Request) {
     }
 
     const recent = new Date(Date.now() - 60_000).toISOString();
-    const { data: latest } = await admin.from("auth_otps").select("created_at").eq("email", input.email).eq("auth_mode", input.mode).gte("created_at", recent).limit(1).maybeSingle();
+    const { data: latest, error: latestError } = await admin.from("auth_otps").select("created_at").eq("email", input.email).gte("created_at", recent).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (latestError) throw latestError;
     if (latest) return NextResponse.json({ error: "Please wait one minute before requesting another code." }, { status: 429 });
 
     const { code, expiresAt } = generateOtp();
-    await admin.from("auth_otps").delete().eq("email", input.email).eq("auth_mode", input.mode).eq("is_verified", false);
-    const { error: insertError } = await admin.from("auth_otps").insert({ email: input.email, otp_code: code, auth_mode: input.mode, expires_at: expiresAt.toISOString() });
+    const { error: deleteError } = await admin.from("auth_otps").delete().eq("email", input.email).eq("is_verified", false);
+    if (deleteError) throw deleteError;
+
+    // id, is_verified, attempts, and created_at are populated by database defaults.
+    const { error: insertError } = await admin.from("auth_otps").insert({
+      email: input.email,
+      otp_code: code,
+      expires_at: expiresAt.toISOString(),
+    });
     if (insertError) throw insertError;
 
     const message = new FormData();
