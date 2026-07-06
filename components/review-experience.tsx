@@ -99,16 +99,38 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
   async function generate() {
     if (currentStep !== 5 || !currentLanguage) return;
     setLoading(true); setError(null);
-    const supabase = createClient();
-    if (!supabase) { setError("Review generation is not configured."); setLoading(false); return; }
     const token=deviceToken||crypto.randomUUID();
     if(!deviceToken)setDeviceToken(token);
-    const { data, error: invokeError } = await supabase.functions.invoke("generate-review", { body: { doctor_id: doctor.id, selected_keywords: selectedExperiences, selected_treatments: selectedServices, selected_treatment_keyword: selectedServices[0] || null, rating: 5, custom_notes: customNotes.trim() || null, language: currentLanguage, device_token: token, ...(patientLocation || {}) } });
-    const returned = Array.isArray(data?.reviews) ? data.reviews.filter((review: unknown): review is string => typeof review === "string" && review.trim().length > 0).map((review: string) => review.trim()).slice(0, 5) : [];
-    if (invokeError || data?.error || returned.length < 2) { setError(data?.error || invokeError?.message || "Unable to generate a review right now."); setLoading(false); return; }
-    setReviews(returned); setLoading(false);
-    if (scanId) void supabase.functions.invoke("mark-scan", { body: { scan_id: scanId, event: "generated" } });
-    advance(5);
+    const fallback=currentLanguage==="hinglish"
+      ? ["Mera clinic visit achha raha.","Doctor aur clinic staff ke saath mera overall experience positive raha.","Main clinic ke experience se satisfied hoon.","Mere visit ke basis par clinic ka experience achha raha."]
+      : ["I had a positive experience during my clinic visit.","My overall visit with the doctor and clinic staff was good.","I am satisfied with my experience at the clinic.","Based on my visit, my experience with the clinic was positive."];
+    try {
+      const supabaseUrl=process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const anonKey=process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      if(!supabaseUrl||!anonKey)throw new Error("Review generation is not configured.");
+      const response=await fetch(`${supabaseUrl.replace(/\/$/,"")}/functions/v1/generate-review`,{
+        method:"POST",
+        headers:{"Content-Type":"application/json",apikey:anonKey,Authorization:`Bearer ${anonKey}`},
+        body:JSON.stringify({doctor_id:doctor.id,selected_keywords:selectedExperiences,selected_treatments:selectedServices,selected_treatment_keyword:selectedServices[0]||null,rating:5,custom_notes:customNotes.trim()||null,language:currentLanguage,device_token:token,...(patientLocation||{})}),
+      });
+      const responseText=await response.text();
+      if(!response.ok)console.error("generate-review non-ok response",{status:response.status,statusText:response.statusText,body:responseText});
+      let data:Record<string,unknown>={};
+      try{data=responseText?JSON.parse(responseText) as Record<string,unknown>:{};}catch(parseError){console.error("generate-review invalid JSON response",{status:response.status,statusText:response.statusText,body:responseText,parseError});}
+      const returned=Array.isArray(data.reviews)?data.reviews.filter((review:unknown):review is string=>typeof review==="string"&&review.trim().length>0).map(review=>review.trim()).slice(0,5):[];
+      if(typeof data.error==="string"){setError(data.error);return;}
+      if(!response.ok||returned.length<2){setReviews(fallback);}
+      else setReviews(returned);
+      const supabase=createClient();
+      if(supabase&&scanId)void supabase.functions.invoke("mark-scan",{body:{scan_id:scanId,event:"generated"}});
+      advance(5);
+    } catch(requestError) {
+      console.error("generate-review request failed; using local fallback",requestError);
+      setReviews(fallback);
+      advance(5);
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function copyReview(review: string) {

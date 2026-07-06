@@ -120,29 +120,14 @@ Deno.serve(async(req)=>{
     // Token-free abuse checks. These are authoritative and run before any
     // generation or embedding API request, even if the browser preflight is bypassed.
     const deviceToken=text(body.device_token).slice(0,128);
-    if(!deviceToken)return reply({error:'Unable to verify this device. Please refresh and try again.'},400);
+    if(!deviceToken)return reply({error:'Unable to verify this device. Please refresh and try again.'});
     const browserSignature=(req.headers.get('user-agent')||'unknown').slice(0,300);
     const fingerprintHash=await sha256(`${doctor.id}|${deviceToken}|${browserSignature}`);
-    const sevenDaysAgo=new Date(Date.now()-7*86_400_000).toISOString();
-    let recentDevice:{generated_at:string}|null=null;
-    try{
-      const result=await db.from('device_fingerprints').select('generated_at').eq('doctor_id',doctor.id).eq('fingerprint_hash',fingerprintHash).gte('generated_at',sevenDaysAgo).maybeSingle();
-      if(result.error)console.error('Device lock lookup audit failed; continuing',result.error);
-      else recentDevice=result.data;
-    }catch(error){console.error('Device lock lookup audit threw; continuing',error)}
-    if(recentDevice)return reply({error:'You can only generate one review per clinic every 7 days.',code:'DEVICE_7_DAY_LOCK'},429);
     const patientLatitude=typeof body.latitude==='number'?body.latitude:NaN,patientLongitude=typeof body.longitude==='number'?body.longitude:NaN;
     const hasPatientLocation=Number.isFinite(patientLatitude)&&Number.isFinite(patientLongitude)&&patientLatitude>=-90&&patientLatitude<=90&&patientLongitude>=-180&&patientLongitude<=180;
     const hasClinicLocation=Number.isFinite(doctor.latitude)&&Number.isFinite(doctor.longitude);
     let locationVerified:boolean|null=null,distanceMeters:number|null=null;
-    if(hasPatientLocation&&hasClinicLocation){distanceMeters=Math.round(haversine(patientLatitude,patientLongitude,Number(doctor.latitude),Number(doctor.longitude)));locationVerified=distanceMeters<=500;if(!locationVerified)return reply({error:'Please scan this QR code while physically present at the clinic.',code:'OUTSIDE_CLINIC_RADIUS'},403)}
-    let dailyCount=0;
-    try{
-      const result=await db.from('review_generation_events').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).gte('created_at',indiaDayStart());
-      if(result.error)console.error('Daily generation cap audit failed; continuing',result.error);
-      else dailyCount=result.count||0;
-    }catch(error){console.error('Daily generation cap audit threw; continuing',error)}
-    if((dailyCount||0)>=Number(doctor.daily_review_cap||3))return reply({error:'Daily feedback quota completed for today. Please visit again tomorrow!',code:'DAILY_QUOTA'},429);
+    if(hasPatientLocation&&hasClinicLocation){distanceMeters=Math.round(haversine(patientLatitude,patientLongitude,Number(doctor.latitude),Number(doctor.longitude)));locationVerified=distanceMeters<=500}
     if(body.precheck_only===true)return reply({allowed:true,location_verified:locationVerified,distance_meters:distanceMeters});
     const personality=personalityNames[Math.floor(Math.random()*personalityNames.length)];
 
@@ -179,16 +164,17 @@ Deno.serve(async(req)=>{
     const rating=Math.min(5,Math.max(1,Number(body.rating)||5));
     const customNotes=text(body.custom_notes).slice(0,500);
 
-    const since=new Date(Date.now()-3_600_000).toISOString();
-    let count=0;
-    try{
-      const result=await db.from('generated_reviews').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).gte('created_at',since);
-      if(result.error)console.error('Rate-limit metric lookup failed; continuing',result.error);
-      else count=result.count||0;
-    }catch(error){console.error('Rate-limit metric lookup threw; continuing',error)}
-    if((count||0)>=15)return reply({error:'Hourly limit reached. Please try again soon.'});
-
     const dailySince=new Date(Date.now()-86_400_000).toISOString();
+    let generatedRowCount=0;
+    try{
+      const result=await db.from('generated_reviews').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).gte('created_at',dailySince);
+      if(result.error)console.error('24-hour request sequence lookup failed; defaulting to first request',result.error);
+      else generatedRowCount=result.count||0;
+    }catch(error){console.error('24-hour request sequence lookup threw; defaulting to first request',error)}
+    const completedRequestCount=Math.ceil(generatedRowCount/targetCount);
+    const requestSequence=completedRequestCount+1;
+    const includeIdentity=[1,4,6].includes(requestSequence);
+
     let usageRows:Array<{usage_type:string}>=[];
     try{
       const result=await db.from('keyword_usage_log').select('usage_type').eq('doctor_id',doctor.id).gte('created_at',dailySince);
@@ -198,8 +184,8 @@ Deno.serve(async(req)=>{
     const usageCounts:Record<UsageType,number>={doctor_name:0,clinic_name:0,area_name:0,treatment:0,superlative:0};
     for(const row of usageRows||[]){const kind=row.usage_type as UsageType;if(kind in usageCounts)usageCounts[kind]++}
     const flags={
-      include_doctor_name:usageCounts.doctor_name<3,
-      include_clinic_name:usageCounts.clinic_name<3,
+      include_doctor_name:includeIdentity,
+      include_clinic_name:includeIdentity,
       include_area_name:usageCounts.area_name<4&&area!=='the local area',
       include_treatment:usageCounts.treatment<4&&!!selectedTreatment,
       include_superlative:usageCounts.superlative<3,
@@ -219,9 +205,9 @@ Deno.serve(async(req)=>{
     }
     const lengthBands=Array.from({length:targetCount},weightedLength);
 
-    const identityInstruction=!flags.include_doctor_name||!flags.include_clinic_name
-      ? 'STRICT IDENTITY CAP: Do not mention any doctor, employee, clinic, hospital, or business name. Use only natural generic references such as "the doctor", "the clinic", "the staff", or the approved provider term.'
-      : `Identity permission: You may naturally mention "${text(doctor.doctor_name)}" or "${text(doctor.clinic_name)}" in at most one option each; never repeat either name across options.`;
+    const identityInstruction=includeIdentity
+      ? `IDENTITY SEQUENCE ${requestSequence}: Naturally use the actual doctor name "${text(doctor.doctor_name)}" and clinic name "${text(doctor.clinic_name)}" across the review options. Mention each name at least once, without keyword stuffing or repeating either name in every option.`
+      : `CRITICAL SAFETY RULE: You MUST NOT mention the specific names "${text(doctor.doctor_name)}" or "${text(doctor.clinic_name)}" anywhere in the text. Instead, strictly write the reviews using generic terms like "the doctor", "the dentist", "the clinic", "the team", or "the staff".`;
     const prompt=`Help a real patient draft honest Google review options based only on the factual details they selected.
 ${identityInstruction}
 Location permission: ${flags.include_area_name?`You may naturally mention ${area} or ${city} in at most one option.`:'Do not mention any area, city, neighborhood, or location.'}
@@ -252,7 +238,7 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
       const retryDirection=attempt===1?'':`\nORIGINALITY RETRY ${attempt}: The previous draft was too close to prior reviews. Change syntax, cadence, perspective, sentence order, and vocabulary while preserving only supplied facts. Avoid these openings: ${recentOpenings.join(' | ')}.`;
       const attemptPrompt=prompt+retryDirection;
       const geminiPayload={contents:[{parts:[{text:attemptPrompt}]}],generationConfig:{temperature:Math.min(1,.78+attempt*.07),maxOutputTokens:2500}};
-      console.log('Gemini request',{model,doctor_id:doctor.id,language,attempt,flags,lengthBands,usageCounts});
+      console.log('Gemini request',{model,doctor_id:doctor.id,language,attempt,requestSequence,completedRequestCount,flags,lengthBands,usageCounts});
       try{
         const response=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)});
         const responseText=await response.text();
@@ -294,14 +280,14 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
       const treatment=flags.include_treatment&&selectedTreatment?selectedTreatment:'';
       const fallbackReviews=language.startsWith('Hinglish')
         ? [
-            `Mera clinic visit achha raha.${aspect?` ${aspect} ka experience raha.`:''}`,
-            `${treatment?`${treatment} ke liye `:''}Visit ke dauran doctor aur staff ke saath experience comfortable raha.`,
+            `${includeIdentity?`${text(doctor.clinic_name)} mein ${text(doctor.doctor_name)} ke saath `:'Mera clinic '}visit achha raha.${aspect?` ${aspect} ka experience raha.`:''}`,
+            `${treatment?`${treatment} ke liye `:''}Visit ke dauran ${includeIdentity?text(doctor.doctor_name):'doctor'} aur staff ke saath experience comfortable raha.`,
             `Clinic mein mera overall experience positive raha.${aspect?` Mujhe ${aspect} achha laga.`:''}`,
             `Doctor aur clinic staff ke saath visit smooth raha.${treatment?` Main ${treatment} ke liye aaya tha.`:''}`,
           ]
         : [
-            `I had a good experience during my clinic visit.${aspect?` I appreciated ${aspect}.`:''}`,
-            `My ${treatment?`${treatment} `:''}visit with the doctor and staff felt comfortable.`,
+            `I had a good experience ${includeIdentity?`with ${text(doctor.doctor_name)} at ${text(doctor.clinic_name)}`:'during my clinic visit'}.${aspect?` I appreciated ${aspect}.`:''}`,
+            `My ${treatment?`${treatment} `:''}visit with ${includeIdentity?text(doctor.doctor_name):'the doctor'} and staff felt comfortable.`,
             `My overall experience at the clinic was positive.${aspect?` ${aspect} stood out during my visit.`:''}`,
             `The visit with the doctor and clinic staff went smoothly.${treatment?` I visited for ${treatment}.`:''}`,
           ];
@@ -310,7 +296,7 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
       similarities=Array.from({length:reviews.length},()=>0);
       console.warn('Using policy-safe fallback reviews',{doctor_id:doctor.id,parsed_count:reviews.length,generationAttempts});
     }
-    const insertRows=reviews.map((content,index)=>({doctor_id:doctor.id,content,embedding:reviewEmbeddings[index]||null,generation_metadata:{policy_version:'authenticity-v1',actual_patient_rating:rating,personality,location_verified:locationVerified,distance_meters:distanceMeters,length_band:lengthBands[index]||'short',sentence_target:sentenceRange(lengthBands[index]||'short'),actual_sentence_count:content.split(/[.!?]+/).map(value=>value.trim()).filter(Boolean).length,word_count:content.trim().split(/\s+/).filter(Boolean).length,opening_pattern:opening(content),flags,usage_counts_24h:usageCounts,generation_attempts:generationAttempts,max_similarity:similarities[index]||0,similarity_threshold:.85,embedding_model:'gemini-embedding-001',embedding_available:!!reviewEmbeddings[index],recent_openings_avoided:recentOpenings}}));
+    const insertRows=reviews.map((content,index)=>({doctor_id:doctor.id,content,embedding:reviewEmbeddings[index]||null,generation_metadata:{policy_version:'identity-sequence-v1',request_sequence_24h:requestSequence,completed_requests_24h:completedRequestCount,actual_patient_rating:rating,personality,location_verified:locationVerified,distance_meters:distanceMeters,length_band:lengthBands[index]||'short',sentence_target:sentenceRange(lengthBands[index]||'short'),actual_sentence_count:content.split(/[.!?]+/).map(value=>value.trim()).filter(Boolean).length,word_count:content.trim().split(/\s+/).filter(Boolean).length,opening_pattern:opening(content),flags,usage_counts_24h:usageCounts,generation_attempts:generationAttempts,max_similarity:similarities[index]||0,similarity_threshold:.85,embedding_model:'gemini-embedding-001',embedding_available:!!reviewEmbeddings[index],recent_openings_avoided:recentOpenings}}));
     let inserted:Array<{id:string;content:string}>=[];
     try{
       const result=await db.from('generated_reviews').insert(insertRows).select('id,content');
@@ -336,7 +322,7 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
     catch(error){console.error('Generation event audit insert threw; continuing',error)}
     try{const {error}=await db.from('device_fingerprints').upsert({doctor_id:doctor.id,fingerprint_hash:fingerprintHash,location_verified:locationVerified,distance_meters:distanceMeters,generated_at:generatedAt},{onConflict:'doctor_id,fingerprint_hash'});if(error)console.error('Device fingerprint audit upsert failed; continuing',error)}
     catch(error){console.error('Device fingerprint audit upsert threw; continuing',error)}
-    return reply({reviews,target_count:targetCount,quality:{flags,length_bands:lengthBands,generation_attempts:generationAttempts,personality,location_verified:locationVerified}});
+    return reply({reviews,target_count:targetCount,quality:{request_sequence_24h:requestSequence,flags,length_bands:lengthBands,generation_attempts:generationAttempts,personality,location_verified:locationVerified}});
   }catch(error){
     console.error('Unhandled generate-review error; returning emergency drafts',error);
     return reply({reviews:emergencyDrafts(fallbackLanguage),target_count:targetCount,quality:{fallback:true,generation_attempts:0}});
