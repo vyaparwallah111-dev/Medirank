@@ -42,10 +42,8 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
   const [customNotes, setCustomNotes] = useState("");
   const [reviews, setReviews] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const [validationError, setValidationError] = useState("");
-  const [eligibilityChecking, setEligibilityChecking] = useState(true);
-  const [eligibilityError, setEligibilityError] = useState("");
   const [deviceToken, setDeviceToken] = useState("");
   const [patientLocation, setPatientLocation] = useState<Location | null>(null);
   const [showThankYou, setShowThankYou] = useState(false);
@@ -53,20 +51,21 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
   const stepRefs = useRef<Array<HTMLElement | null>>([]);
 
   useEffect(() => {
-    let active = true;
-    const token = localStorage.getItem("medirank_device_token") || crypto.randomUUID();
-    localStorage.setItem("medirank_device_token", token); setDeviceToken(token);
-    async function precheck(location: Location | null) {
-      if (location) setPatientLocation(location);
-      const supabase = createClient();
-      if (!supabase) { if (active) { setEligibilityError("Review generation is not configured."); setEligibilityChecking(false); } return; }
-      const { data, error: checkError } = await supabase.functions.invoke("generate-review", { body: { doctor_id: doctor.id, device_token: token, precheck_only: true, ...(location || {}) } });
-      if (active) { setEligibilityError(data?.error || checkError?.message || ""); setEligibilityChecking(false); }
+    try {
+      const token = localStorage.getItem("medirank_device_token") || crypto.randomUUID();
+      localStorage.setItem("medirank_device_token", token);
+      setDeviceToken(token);
+    } catch {
+      setDeviceToken(crypto.randomUUID());
     }
-    if (!navigator.geolocation) { void precheck(null); return () => { active = false; }; }
-    navigator.geolocation.getCurrentPosition((position) => void precheck({ latitude: position.coords.latitude, longitude: position.coords.longitude }), () => void precheck(null), { enableHighAccuracy: true, timeout: 8000, maximumAge: 60_000 });
-    return () => { active = false; };
-  }, [doctor.id]);
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => setPatientLocation({ latitude: position.coords.latitude, longitude: position.coords.longitude }),
+        () => undefined,
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 60_000 },
+      );
+    }
+  }, []);
 
   useEffect(() => {
     if (!showThankYou) { setGoogleEnabled(false); return; }
@@ -98,11 +97,13 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
   }
 
   async function generate() {
-    if (currentStep !== 5 || !currentLanguage || eligibilityChecking || eligibilityError || !deviceToken) return;
-    setLoading(true); setError("");
+    if (currentStep !== 5 || !currentLanguage) return;
+    setLoading(true); setError(null);
     const supabase = createClient();
     if (!supabase) { setError("Review generation is not configured."); setLoading(false); return; }
-    const { data, error: invokeError } = await supabase.functions.invoke("generate-review", { body: { doctor_id: doctor.id, selected_keywords: selectedExperiences, selected_treatments: selectedServices, selected_treatment_keyword: selectedServices[0] || null, rating: 5, custom_notes: customNotes.trim() || null, language: currentLanguage, device_token: deviceToken, ...(patientLocation || {}) } });
+    const token=deviceToken||crypto.randomUUID();
+    if(!deviceToken)setDeviceToken(token);
+    const { data, error: invokeError } = await supabase.functions.invoke("generate-review", { body: { doctor_id: doctor.id, selected_keywords: selectedExperiences, selected_treatments: selectedServices, selected_treatment_keyword: selectedServices[0] || null, rating: 5, custom_notes: customNotes.trim() || null, language: currentLanguage, device_token: token, ...(patientLocation || {}) } });
     const returned = Array.isArray(data?.reviews) ? data.reviews.filter((review: unknown): review is string => typeof review === "string" && review.trim().length > 0).map((review: string) => review.trim()).slice(0, 5) : [];
     if (invokeError || data?.error || returned.length < 2) { setError(data?.error || invokeError?.message || "Unable to generate a review right now."); setLoading(false); return; }
     setReviews(returned); setLoading(false);
@@ -147,7 +148,7 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
 
       <section ref={(node) => { stepRefs.current[3] = node; }} className={levelClass(3)}><Bubble>{t.notesBubble}</Bubble><h2 className="text-xl font-black">{t.notesTitle} <span className="text-sm">({t.optional})</span></h2><textarea value={customNotes} onChange={(event) => setCustomNotes(event.target.value.slice(0, 500))} rows={4} maxLength={500} placeholder={t.notesPlaceholder} className="input mt-4 resize-y text-base text-slate-950 placeholder:text-slate-600" /><p className="mt-2 text-right text-xs font-black">{customNotes.length}/500</p><button type="button" onClick={() => advance(4)} className="mt-4 min-h-12 w-full rounded-xl bg-[#0A4C95] px-5 font-black text-white">{t.next}</button></section>
 
-      <section ref={(node) => { stepRefs.current[4] = node; }} className={levelClass(4)}><Bubble orange>{t.generateBubble}</Bubble><h2 className="text-xl font-black">{t.generateTitle}</h2>{eligibilityChecking && <p className="mt-4 flex items-center justify-center gap-2 rounded-xl bg-slate-100 p-3 text-sm font-bold"><Loader2 size={17} className="animate-spin" />{t.checking}</p>}{eligibilityError && <p className="mt-4 rounded-xl bg-amber-100 p-3 text-sm font-bold">{eligibilityError}</p>}{error && <p className="mt-4 rounded-xl bg-red-100 p-3 text-sm font-bold text-red-900">{error}</p>}<button type="button" onClick={generate} disabled={loading || eligibilityChecking || !!eligibilityError} className="mt-5 flex min-h-14 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-5 font-black text-white shadow-[0_0_24px_rgba(10,76,149,.45)] disabled:opacity-40">{loading ? <><Loader2 size={20} className="animate-spin" />{t.generating}</> : <><Sparkles size={20} />{t.generate}</>}</button></section>
+      <section ref={(node) => { stepRefs.current[4] = node; }} className={levelClass(4)}><Bubble orange>{t.generateBubble}</Bubble><h2 className="text-xl font-black">{t.generateTitle}</h2>{error && <p className="mt-4 rounded-xl bg-red-100 p-3 text-sm font-bold text-red-900">{error}</p>}<button type="button" onClick={generate} disabled={loading} className="mt-5 flex min-h-14 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-5 font-black text-white shadow-[0_0_24px_rgba(10,76,149,.45)] disabled:opacity-40">{loading ? <><Loader2 size={20} className="animate-spin" />{t.generating}</> : <><Sparkles size={20} />{t.generate}</>}</button></section>
 
       <section ref={(node) => { stepRefs.current[5] = node; }} className={levelClass(5)}><Bubble>{t.draftsBubble}</Bubble><h2 className="text-xl font-black">{t.draftsTitle}</h2>{error && <p className="mt-4 rounded-xl bg-red-100 p-3 text-sm font-bold text-red-900">{error}</p>}<div className="mt-4 space-y-4">{reviews.map((review, index) => <article key={index} className="rounded-2xl border-2 border-slate-200 p-4"><div className="flex gap-1 text-[#F37021]">{Array.from({ length: 5 }).map((_, star) => <Star key={star} fill="currentColor" size={14} />)}</div><p className="mt-3 text-base font-semibold leading-7">{review}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-4 font-black text-white"><Clipboard size={18} />{t.copyReview}</button></article>)}</div></section>
     </div>
