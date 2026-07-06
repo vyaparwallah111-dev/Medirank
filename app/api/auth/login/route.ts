@@ -1,6 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
@@ -16,8 +15,7 @@ export async function POST(request: Request) {
 
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    const admin = createAdminClient();
-    if (!url || !anonKey || !admin) {
+    if (!url || !anonKey) {
       return NextResponse.json({ error: "Authentication is unavailable." }, { status: 503 });
     }
 
@@ -29,21 +27,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Email or password is incorrect." }, { status: 401 });
     }
 
-    const { data: profile, error: profileError } = await admin
-      .from("doctors")
-      .select("is_admin,is_active")
-      .eq("auth_user_id", data.user.id)
-      .maybeSingle();
-    if (profileError) throw profileError;
-    if (profile?.is_active === false) {
-      return NextResponse.json({ error: "Your account is suspended. Please contact support." }, { status: 403 });
-    }
-
-    return NextResponse.json({
-      accessToken: data.session.access_token,
-      refreshToken: data.session.refresh_token,
-      destination: profile?.is_admin ? "/admin/dashboard" : "/dashboard",
-    });
+    // Credentials are valid, but no session is returned to the browser here.
+    // The user must complete the email OTP challenge before verify-otp creates
+    // and returns the authenticated session.
+    return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("Login error:", error);
     return NextResponse.json({ error: "Unable to log in right now." }, { status: 500 });

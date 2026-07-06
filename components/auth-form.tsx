@@ -49,16 +49,6 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "Unable to log in.");
-        const supabase = createClient();
-        if (!supabase) throw new Error("Supabase is not configured.");
-        const { error: sessionError } = await supabase.auth.setSession({
-          access_token: result.accessToken,
-          refresh_token: result.refreshToken,
-        });
-        if (sessionError) throw sessionError;
-        router.replace(result.destination);
-        router.refresh();
-        return;
       }
 
       await sendOtp(nextCredentials.email);
