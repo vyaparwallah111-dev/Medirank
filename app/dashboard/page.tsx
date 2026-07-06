@@ -2,6 +2,10 @@ import Link from "next/link";
 import { ArrowUpRight, ClipboardCheck, LockKeyhole, QrCode, ScanLine, Send, Star } from "lucide-react";
 import { displayDoctorName, getAuthenticatedUser, getCurrentDoctor } from "@/lib/dashboard";
 import { DirectLinkShare } from "@/components/direct-link-share";
+import { DashboardAutoRefresh } from "@/components/dashboard-auto-refresh";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 type TrendPoint = { label: string; scans: number; posts: number };
 
@@ -48,6 +52,7 @@ export default async function Dashboard() {
 
   if (isStarter) return (
     <div className="mx-auto max-w-7xl">
+      <DashboardAutoRefresh />
       {heading}
       <div className="card mt-8 max-w-md p-6">
         <span className="grid h-11 w-11 place-items-center rounded-xl bg-blue-50 text-brand"><ScanLine size={22} /></span>
@@ -64,6 +69,7 @@ export default async function Dashboard() {
   const stats = [[ScanLine, "Total scans", scans.toLocaleString()], [ClipboardCheck, "Total review copies", copied.toLocaleString()], [Send, "Total successful posts", posted.toLocaleString()], [Star, "Conversion percentage", `${conversion.toFixed(1)}%`]] as const;
   return (
     <div className="mx-auto max-w-7xl">
+      <DashboardAutoRefresh />
       {heading}
       <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{stats.map(([Icon, label, value]) => <div className="card p-5 transition-shadow duration-300 hover:shadow-md" key={label}><span className="grid h-10 w-10 place-items-center rounded-xl bg-blue-50 text-brand"><Icon size={20}/></span><p className="mt-5 min-h-9 text-3xl font-extrabold tabular-nums">{value}</p><p className="mt-1 text-sm text-slate-500">{label}</p></div>)}</div>
       <div className="mt-5 grid gap-5 xl:grid-cols-2"><TrendChart title="Daily trend" subtitle="Last 14 days" points={dailyTrends(trendRows)}/><TrendChart title="Weekly trend" subtitle="Last 8 weeks" points={weeklyTrends(trendRows)}/></div>

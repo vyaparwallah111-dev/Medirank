@@ -133,9 +133,24 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
     }
   }
 
+  async function logAnalyticsEvent(eventType: "copy" | "click_maps") {
+    if (!scanId) { console.error("Analytics event skipped: scan session is unavailable.", { doctorId: doctor.id, eventType }); return; }
+    try {
+      const response = await fetch("/api/analytics/event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doctor_id: doctor.id, scan_id: scanId, event_type: eventType }),
+        keepalive: eventType === "click_maps",
+      });
+      if (!response.ok) console.error("Analytics event returned non-ok status", { eventType, status: response.status, statusText: response.statusText, body: await response.text() });
+    } catch (analyticsError) {
+      console.error("Analytics event request failed", { eventType, analyticsError });
+    }
+  }
+
   async function copyReview(review: string) {
     try {
-      await navigator.clipboard.writeText(review);
+      await Promise.all([navigator.clipboard.writeText(review), logAnalyticsEvent("copy")]);
       const supabase = createClient();
       if (supabase && scanId) void supabase.functions.invoke("mark-scan", { body: { scan_id: scanId, event: "copied" } });
       setCurrentStep(7);
@@ -145,6 +160,7 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
 
   function trackGoogleProceed() {
     if (!googleEnabled) return;
+    void logAnalyticsEvent("click_maps");
     const supabase = createClient();
     if (supabase && scanId) void supabase.functions.invoke("mark-scan", { body: { scan_id: scanId, event: "posted" } });
   }
