@@ -10,7 +10,7 @@ const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status
 type KB={area_name?:unknown;city_name?:unknown;top_services?:unknown};
 const text=(value:unknown,fallback='')=>typeof value==='string'&&value.trim()?value.trim():fallback;
 const list=(value:unknown)=>Array.isArray(value)?value.filter((item):item is string=>typeof item==='string'&&!!item.trim()).map(item=>item.trim()):[];
-type UsageType='doctor_name'|'area_name'|'treatment'|'superlative';
+type UsageType='doctor_name'|'clinic_name'|'area_name'|'treatment'|'superlative';
 type LengthBand='short'|'medium'|'long';
 const weightedLength=():LengthBand=>{const roll=Math.random();return roll<.4?'short':roll<.8?'medium':'long'};
 const sentenceRange=(band:LengthBand)=>band==='short'?'1-2':band==='medium'?'3-4':'5-6';
@@ -81,7 +81,7 @@ Deno.serve(async(req)=>{
     const url=Deno.env.get('SUPABASE_URL'),serviceKey=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),geminiKey=Deno.env.get('GEMINI_API_KEY');
     if(!url||!serviceKey||!geminiKey){console.error('Missing Edge Function secrets',{hasUrl:!!url,hasServiceKey:!!serviceKey,hasGeminiKey:!!geminiKey});return reply({error:'Review service is not configured.'})}
     const db=createClient(url,serviceKey);
-    const {data:doctor,error:doctorError}=await db.from('doctors').select('id,doctor_name,city,specialization,knowledge_base,subscription_tier,latitude,longitude,daily_review_cap').eq('id',doctorId).eq('is_active',true).maybeSingle();
+    const {data:doctor,error:doctorError}=await db.from('doctors').select('id,doctor_name,clinic_name,city,specialization,knowledge_base,subscription_tier,latitude,longitude,daily_review_cap').eq('id',doctorId).eq('is_active',true).maybeSingle();
     if(doctorError){console.error('Doctor lookup failed',doctorError);return reply({error:'Unable to load clinic details.'})}
     if(!doctor)return reply({error:'Clinic not found.'});
 
@@ -147,11 +147,11 @@ Deno.serve(async(req)=>{
     const dailySince=new Date(Date.now()-86_400_000).toISOString();
     const {data:usageRows,error:usageError}=await db.from('keyword_usage_log').select('usage_type').eq('doctor_id',doctor.id).gte('created_at',dailySince);
     if(usageError){console.error('Daily phrase-cap lookup failed',usageError);return reply({error:'Unable to verify review quality limits. Please try again.'},503)}
-    const usageCounts:Record<UsageType,number>={doctor_name:0,area_name:0,treatment:0,superlative:0};
+    const usageCounts:Record<UsageType,number>={doctor_name:0,clinic_name:0,area_name:0,treatment:0,superlative:0};
     for(const row of usageRows||[]){const kind=row.usage_type as UsageType;if(kind in usageCounts)usageCounts[kind]++}
     const flags={
-      // Provider names remain disabled as an additional privacy/authenticity safeguard.
-      include_doctor_name:false,
+      include_doctor_name:usageCounts.doctor_name<3,
+      include_clinic_name:usageCounts.clinic_name<3,
       include_area_name:usageCounts.area_name<4&&area!=='the local area',
       include_treatment:usageCounts.treatment<4&&!!selectedTreatment,
       include_superlative:usageCounts.superlative<3,
@@ -167,7 +167,11 @@ Deno.serve(async(req)=>{
     }
     const lengthBands=Array.from({length:targetCount},weightedLength);
 
+    const identityInstruction=!flags.include_doctor_name||!flags.include_clinic_name
+      ? 'STRICT IDENTITY CAP: Do not mention any doctor, employee, clinic, hospital, or business name. Use only natural generic references such as "the doctor", "the clinic", "the staff", or the approved provider term.'
+      : `Identity permission: You may naturally mention "${text(doctor.doctor_name)}" or "${text(doctor.clinic_name)}" in at most one option each; never repeat either name across options.`;
     const prompt=`Help a real patient draft honest Google review options based only on the factual details they selected.
+${identityInstruction}
 Location permission: ${flags.include_area_name?`You may naturally mention ${area} or ${city} in at most one option.`:'Do not mention any area, city, neighborhood, or location.'}
 Service category: ${specialty}. Refer to the care provider only as ${providerTerm} or "the clinical staff".
 Selected aspect: ${aspects.join(', ')||'good care'}. Treatment permission: ${flags.include_treatment?`You may mention the selected treatment "${selectedTreatment}" in at most one option.`:'Do not name or infer any treatment.'}
@@ -176,7 +180,7 @@ Language: ${language}.
 Tone profile: ${personality}. ${personalities[personality]}
 ${language.startsWith('Hinglish')?'Generate natural Hinglish in Hindi written only in Latin script. Across the four variants, use natural Hindi-English vocabulary without Devanagari or awkward literal translations.':''}
 
-CRITICAL: Never mention specific doctor or employee names. Use generic provider terms. Never invent a person, treatment outcome, waiting time, parking issue, seating issue, complaint, rating, or detail that the patient did not provide. Preserve the patient's actual ${rating}/5 rating and sentiment. ${flags.include_superlative?'A superlative may appear in at most one option and only when directly supported by the patient-selected wording.':'Do not use superlatives such as best, amazing, excellent, perfect, or outstanding.'}
+CRITICAL: Follow the identity cap above exactly. Never invent a person, treatment outcome, waiting time, parking issue, seating issue, complaint, rating, or detail that the patient did not provide. Preserve the patient's actual ${rating}/5 rating and sentiment. ${flags.include_superlative?'A superlative may appear in at most one option and only when directly supported by the patient-selected wording.':'Do not use superlatives such as best, amazing, excellent, perfect, or outstanding.'}
 Do not begin any option with these recently used opening patterns: ${recentOpenings.length?recentOpenings.join(' | '):'none'}.
 
 STRUCTURAL VARIATION RULES FOR THE FOUR VARIANTS:
@@ -207,6 +211,14 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
         console.log('Raw Gemini Output:',textResponse);
         const drafts=parseReviews(textResponse,targetCount);
         if(drafts.length<2){console.error('Gemini returned invalid review count',{model,targetCount,count:drafts.length});continue}
+        const forbiddenIdentities=[
+          ...(!flags.include_doctor_name?[text(doctor.doctor_name),text(doctor.doctor_name).replace(/^dr\.?\s*/i,'')]:[]),
+          ...(!flags.include_clinic_name?[text(doctor.clinic_name)]:[]),
+        ].map(normalize).filter(Boolean);
+        if(forbiddenIdentities.length&&drafts.some(draft=>forbiddenIdentities.some(identity=>normalize(draft).includes(identity)))){
+          console.error('Gemini violated 24-hour identity cap',{doctor_id:doctor.id,attempt});
+          continue;
+        }
         const vectors=await Promise.all(drafts.map(content=>embed(geminiKey,content)));
         const maxSimilarities=vectors.map((vector,index)=>{
           if(!vector)return 0;
@@ -229,11 +241,12 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
     const insertRows=reviews.map((content,index)=>({doctor_id:doctor.id,content,embedding:reviewEmbeddings[index]||null,generation_metadata:{policy_version:'authenticity-v1',actual_patient_rating:rating,personality,location_verified:locationVerified,distance_meters:distanceMeters,length_band:lengthBands[index]||'short',sentence_target:sentenceRange(lengthBands[index]||'short'),actual_sentence_count:content.split(/[.!?]+/).map(value=>value.trim()).filter(Boolean).length,word_count:content.trim().split(/\s+/).filter(Boolean).length,opening_pattern:opening(content),flags,usage_counts_24h:usageCounts,generation_attempts:generationAttempts,max_similarity:similarities[index]||0,similarity_threshold:.85,embedding_model:'gemini-embedding-001',embedding_available:!!reviewEmbeddings[index],recent_openings_avoided:recentOpenings}}));
     const {data:inserted,error:insertError}=await db.from('generated_reviews').insert(insertRows).select('id,content');
     if(insertError){console.error('Generated review insert failed',insertError);return reply({error:'Unable to save generated reviews.'},500)}
-    const lowerDoctor=normalize(text(doctor.doctor_name));
+    const lowerDoctor=normalize(text(doctor.doctor_name)),lowerClinic=normalize(text(doctor.clinic_name));
     const usageLogs:Array<{doctor_id:string;generated_review_id:string;usage_type:UsageType;phrase:string}>=[];
     for(const row of inserted||[]){
       const normalized=normalize(row.content);const push=(usage_type:UsageType,phrase:string)=>usageLogs.push({doctor_id:doctor.id,generated_review_id:row.id,usage_type,phrase});
       if(lowerDoctor&&normalized.includes(lowerDoctor))push('doctor_name',text(doctor.doctor_name));
+      if(lowerClinic&&normalized.includes(lowerClinic))push('clinic_name',text(doctor.clinic_name));
       if(flags.include_area_name&&[area,city].some(value=>value&&normalized.includes(normalize(value))))push('area_name',area);
       if(flags.include_treatment&&normalized.includes(normalize(selectedTreatment)))push('treatment',selectedTreatment);
       const usedSuperlative=['best','amazing','excellent','perfect','outstanding'].find(word=>new RegExp(`\\b${word}\\b`,'i').test(row.content));if(usedSuperlative)push('superlative',usedSuperlative);

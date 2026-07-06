@@ -5,7 +5,7 @@ create table if not exists public.keyword_usage_log (
   id uuid primary key default gen_random_uuid(),
   doctor_id uuid not null references public.doctors(id) on delete cascade,
   generated_review_id uuid references public.generated_reviews(id) on delete set null,
-  usage_type text not null check (usage_type in ('doctor_name','area_name','treatment','superlative')),
+  usage_type text not null check (usage_type in ('doctor_name','clinic_name','area_name','treatment','superlative')),
   phrase text not null,
   created_at timestamptz not null default now()
 );
