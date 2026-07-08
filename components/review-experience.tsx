@@ -11,6 +11,16 @@ type Theme = { primary?: string; accent?: string; background?: string };
 type Doctor = { id: string; doctor_name: string; clinic_name: string; specialization: string | null; gmb_review_link: string | null; logo_url?: string | null; theme_config?: Theme | null };
 type Location = { latitude: number; longitude: number };
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const highlightChips = [
+  'Painless Treatment 🦷',
+  'Superb Doctor 🌟',
+  'Clean Clinic ✨',
+  'Transparent Fees 💰',
+  'Friendly Staff 🤝',
+  'Clear Explanation 💬',
+  'Quick Relief 😌',
+  'Modern Setup 🏥',
+];
 
 const ThankYouAnimation = dynamic(() => import("./thank-you-animation"), { ssr: false });
 const fallback = { primary: "#0A4C95", accent: "#F37021", background: "#F8FAFC" };
@@ -68,8 +78,10 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
   const [selectedExperiences, setSelectedExperiences] = useState<string[]>([]);
   const [selectedServices, setSelectedServices] = useState<string[]>([]);
   const [customNotes, setCustomNotes] = useState("");
+  const [selectedChip, setSelectedChip] = useState("");
   const [reviews, setReviews] = useState<string[]>([]);
   const [reviewRating, setReviewRating] = useState(5);
+  const [selectedRating, setSelectedRating] = useState(5);
   const [recentHooks, setRecentHooks] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [validationError, setValidationError] = useState("");
@@ -134,6 +146,7 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
     ? `${clinicName} mein ${displayDoctorName} ke saath aapka experience kaisa raha?`
     : `How was your experience with ${displayDoctorName} at ${clinicName}?`;
   const initials = doctorName.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase();
+  const chipOptions = Array.from(new Set([...highlightChips, ...experienceKeywords.slice(0, 4), ...topServices.slice(0, 3)]));
 
   function toggleChoice(value: string, selected: string[], setSelected: (values: string[]) => void) {
     setValidationError("");
@@ -148,13 +161,17 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
     window.setTimeout(() => stepRefs.current[step]?.scrollIntoView({ behavior: "smooth", block: "center" }), 120);
   }
 
-  async function generate() {
-    if (currentStep !== 5 || !currentLanguage) return;
+  async function generate(chip: string, ratingOverride = selectedRating) {
+    if (!currentLanguage || loading) return;
     setLoading(true);
+    setSelectedChip(chip);
+    setReviews([]);
+    setCurrentStep(5);
     const token=deviceToken||crypto.randomUUID();
     if(!deviceToken)setDeviceToken(token);
     const fallback=pickFallbackReviews(currentLanguage);
-    const fallbackRating=Math.random()<0.15?4:5;
+    const forcedRating=ratingOverride>=5?5:4;
+    const fallbackRating=forcedRating;
     try {
       const supabaseUrl=process.env.NEXT_PUBLIC_SUPABASE_URL;
       const anonKey=process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -164,7 +181,7 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
       const response=await fetch(`${supabaseUrl.replace(/\/$/,"")}/functions/v1/generate-review`,{
         method:"POST",
         headers:{"Content-Type":"application/json",apikey:anonKey,Authorization:`Bearer ${anonKey}`},
-        body:JSON.stringify({doctor_id:doctor.id,selected_keywords:selectedExperiences,selected_treatments:selectedServices,selected_treatment_keyword:selectedServices[0]||null,rating:5,custom_notes:customNotes.trim()||null,language:currentLanguage,device_token:token,last_hooks:recentHooks,...(patientLocation||{})}),
+        body:JSON.stringify({doctor_id:doctor.id,selected_keywords:[chip],selected_experiences:[chip],selected_treatments:topServices.includes(chip)?[chip]:[],selected_treatment_keyword:topServices.includes(chip)?chip:null,selected_chip:chip,rating:forcedRating,custom_notes:customNotes.trim()||null,language:currentLanguage,device_token:token,last_hooks:recentHooks,...(patientLocation||{})}),
         signal:controller.signal,
       }).finally(()=>window.clearTimeout(timeout));
       const responseText=await response.text();
@@ -180,13 +197,11 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
       setRecentHooks(nextReviews.map((review)=>review.split(/\n+/)[0]?.trim()).filter(Boolean).slice(-5));
       const supabase=createClient();
       if(supabase&&analyticsScanIdRef.current)void supabase.functions.invoke("mark-scan",{body:{scan_id:analyticsScanIdRef.current,event:"generated"}});
-      advance(5);
     } catch(requestError) {
       console.error("generate-review request failed; using local fallback",requestError);
       setReviewRating(fallbackRating);
       setReviews(fallback);
       setRecentHooks(fallback.map((review)=>review.split(/\n+/)[0]?.trim()).filter(Boolean).slice(-5));
-      advance(5);
     } finally {
       setLoading(false);
     }
@@ -250,15 +265,9 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
     <div className="mx-auto w-full max-w-xl space-y-20 px-3 pt-4 sm:px-5">
       <header className="relative z-30 rounded-3xl bg-white px-4 py-6 text-center shadow-xl">{doctor.logo_url ? <img src={doctor.logo_url} alt={clinicName} className="mx-auto h-16 w-16 rounded-2xl object-contain ring-1 ring-slate-200" /> : <span className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-[#0A4C95] text-xl font-black text-white">{initials}</span>}<p className="mt-3 text-sm font-black text-[#0A4C95]">{clinicName}</p><h1 className="mt-2 text-2xl font-black leading-relaxed">{visitQuestion}</h1><button type="button" onClick={() => setCurrentLanguage(null)} className="mt-4 min-h-12 px-3 text-sm font-bold text-[#0A4C95]">🌐 {currentLanguage === "english" ? "English" : "Hinglish"}</button></header>
 
-      <section ref={(node) => { stepRefs.current[1] = node; }} className={levelClass(1)}><Bubble>{t.experienceBubble}</Bubble><h2 className="text-xl font-black">{t.experienceTitle}</h2><div className="mt-4 grid grid-cols-1 gap-2.5 min-[380px]:grid-cols-2">{(experienceKeywords.length ? experienceKeywords : [t.generalExperience]).map((value) => <Chip key={value} value={value} selected={selectedExperiences.includes(value)} onClick={() => toggleChoice(value, selectedExperiences, setSelectedExperiences)} />)}</div><p className="mt-3 text-right text-sm font-black text-slate-900">{selectedExperiences.length}/3</p>{validationError && <p className="mt-3 rounded-xl bg-red-100 p-3 text-sm font-bold text-red-900">{validationError}</p>}<button type="button" onClick={() => advance(2, selectedExperiences)} className="mt-4 min-h-12 w-full rounded-xl bg-[#0A4C95] px-5 font-black text-white">{t.next}</button></section>
+      <section className="relative z-30 rounded-3xl border border-blue-100 bg-white p-5 shadow-xl sm:p-6"><div className="text-center"><p className="text-xs font-black uppercase tracking-[.18em] text-[#0A4C95]">Tap your rating</p><div className="mt-4 flex justify-center gap-1.5" role="radiogroup" aria-label="Select star rating">{Array.from({ length: 5 }).map((_, index) => { const value=index+1; return <button key={value} type="button" role="radio" aria-checked={selectedRating===value} onClick={() => setSelectedRating(value)} className="grid h-12 w-12 place-items-center rounded-2xl transition active:scale-95"><Star size={34} fill={value<=selectedRating?'#F37021':'none'} className={value<=selectedRating?'text-[#F37021]':'text-slate-300'} strokeWidth={2.2}/></button>; })}</div><p className="mt-2 text-sm font-extrabold text-slate-700">{selectedRating >= 5 ? 'Loved it' : selectedRating === 4 ? 'Good, with small feedback' : 'Needs improvement'}</p></div><div className="mt-7"><h2 className="text-xl font-black">Pick one highlight</h2><p className="mt-1 text-sm font-semibold text-slate-600">One tap creates review drafts instantly.</p><div className="mt-4 grid grid-cols-1 gap-2.5 min-[380px]:grid-cols-2">{chipOptions.map((value) => <button key={value} type="button" disabled={loading} aria-pressed={selectedChip===value} onClick={() => void generate(value, selectedRating)} className={`min-h-14 rounded-2xl border-2 px-4 py-3 text-left text-sm font-black leading-5 transition active:scale-[.98] disabled:opacity-60 ${selectedChip===value?'border-[#0A4C95] bg-blue-50 text-[#0A4C95] shadow-md':'border-slate-200 bg-white text-slate-950 shadow-sm'}`}>{value}</button>)}</div></div></section>
 
-      <section ref={(node) => { stepRefs.current[2] = node; }} className={levelClass(2)}><Bubble orange>{t.treatmentBubble}</Bubble><h2 className="text-xl font-black">{t.treatmentTitle}</h2><div className="mt-4 grid grid-cols-1 gap-2.5 min-[380px]:grid-cols-2">{(topServices.length ? topServices : [doctor.specialization || t.consultation]).map((value) => <Chip key={value} value={value} selected={selectedServices.includes(value)} onClick={() => toggleChoice(value, selectedServices, setSelectedServices)} />)}</div><p className="mt-3 text-right text-sm font-black">{selectedServices.length}/3</p>{validationError && <p className="mt-3 rounded-xl bg-red-100 p-3 text-sm font-bold text-red-900">{validationError}</p>}<button type="button" onClick={() => advance(3, selectedServices)} className="mt-4 min-h-12 w-full rounded-xl bg-[#0A4C95] px-5 font-black text-white">{t.next}</button></section>
-
-      <section ref={(node) => { stepRefs.current[3] = node; }} className={levelClass(3)}><Bubble>{t.notesBubble}</Bubble><h2 className="text-xl font-black">{t.notesTitle} <span className="text-sm">({t.optional})</span></h2><textarea value={customNotes} onChange={(event) => setCustomNotes(event.target.value.slice(0, 500))} rows={4} maxLength={500} placeholder={t.notesPlaceholder} className="input mt-4 resize-y text-base text-slate-950 placeholder:text-slate-600" /><p className="mt-2 text-right text-xs font-black">{customNotes.length}/500</p><button type="button" onClick={() => advance(4)} className="mt-4 min-h-12 w-full rounded-xl bg-[#0A4C95] px-5 font-black text-white">{t.next}</button></section>
-
-      <section ref={(node) => { stepRefs.current[4] = node; }} className={levelClass(4)}><Bubble orange>{t.generateBubble}</Bubble><h2 className="text-xl font-black">{t.generateTitle}</h2><button type="button" onClick={generate} disabled={loading} className="mt-5 flex min-h-14 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-5 font-black text-white shadow-[0_0_24px_rgba(10,76,149,.45)] disabled:opacity-40">{loading ? <><Loader2 size={20} className="animate-spin" />{t.generating}</> : <><Sparkles size={20} />{t.generate}</>}</button></section>
-
-      <section ref={(node) => { stepRefs.current[5] = node; }} className={levelClass(5)}><Bubble>{t.draftsBubble}</Bubble><h2 className="text-xl font-black">{t.draftsTitle}</h2><div className="mt-4 space-y-4">{reviews.map((review, index) => <article key={index} className="rounded-2xl border-2 border-slate-200 p-4"><div className="flex gap-1 text-[#F37021]">{Array.from({ length: 5 }).map((_, star) => <Star key={star} fill={star < reviewRating ? "currentColor" : "none"} size={14} />)}</div><p className="mt-3 whitespace-pre-line text-base font-semibold leading-7">{review}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-4 font-black text-white"><Clipboard size={18} />{t.copyReview}</button></article>)}</div></section>
+      <section ref={(node) => { stepRefs.current[5] = node; }} className="relative z-30 rounded-3xl border border-slate-200 bg-white p-5 shadow-xl sm:p-6"><div className="flex items-center justify-between gap-3"><div><h2 className="text-xl font-black">{t.draftsTitle}</h2>{selectedChip&&<p className="mt-1 text-sm font-bold text-slate-500">{selectedChip} · {reviewRating} star tone</p>}</div>{loading&&<Loader2 size={22} className="animate-spin text-[#0A4C95]" />}</div>{loading ? <div className="mt-5 space-y-4" aria-live="polite">{Array.from({ length: 3 }).map((_, index) => <div key={index} className="rounded-2xl border border-slate-200 p-4"><div className="h-4 w-28 animate-pulse rounded-full bg-slate-200"/><div className="mt-4 space-y-2"><div className="h-3 w-full animate-pulse rounded-full bg-slate-100"/><div className="h-3 w-11/12 animate-pulse rounded-full bg-slate-100"/><div className="h-3 w-8/12 animate-pulse rounded-full bg-slate-100"/></div><div className="mt-4 h-11 animate-pulse rounded-xl bg-blue-50"/></div>)}</div> : reviews.length ? <div className="mt-4 space-y-4">{reviews.map((review, index) => <article key={index} className="rounded-2xl border-2 border-slate-200 p-4"><div className="flex gap-1 text-[#F37021]">{Array.from({ length: 5 }).map((_, star) => <Star key={star} fill={star < reviewRating ? "currentColor" : "none"} size={14} />)}</div><p className="mt-3 whitespace-pre-line text-base font-semibold leading-7">{review}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-4 font-black text-white"><Clipboard size={18} />{t.copyReview}</button></article>)}</div> : <div className="mt-5 rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm font-bold text-slate-500">Select a rating and one highlight to generate review options.</div>}</section>
     </div>
     <BrandFooter />
 

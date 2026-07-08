@@ -263,6 +263,7 @@ Deno.serve(async(req)=>{
     const specialtyLower=specialty.toLowerCase();
     const providerTerm=specialtyLower.includes('dent')?'the dentist':specialtyLower.includes('physician')||specialtyLower.includes('medicine')?'the physician':'the specialist';
     const services=list(kb.top_services);
+    const selectedChip=text(body.selected_chip).slice(0,80);
     const legacyTreatment=text(body.selected_treatment_keyword);
     const requested=[...list(body.selected_treatments),...list(body.selected_services)];
     if(legacyTreatment)requested.unshift(legacyTreatment);
@@ -277,6 +278,8 @@ Deno.serve(async(req)=>{
       .filter((item,index,items)=>items.findIndex(candidate=>candidate.toLowerCase()===item.toLowerCase())===index)
       .filter(item=>allowed.has(item.toLowerCase()))
       .slice(0,3);
+    if(selectedChip&&!aspects.some(item=>item.toLowerCase()===selectedChip.toLowerCase()))aspects.unshift(selectedChip);
+    aspects=aspects.slice(0,3);
     if(isStarter){
       // Starter accounts may send at most three combined treatment/experience
       // keywords. Treatments retain priority, then remaining aspect slots.
@@ -293,6 +296,8 @@ Deno.serve(async(req)=>{
       else aiSettings=(result.data||null) as DoctorAISettings|null;
     }catch(error){console.error('Doctor AI settings lookup threw; continuing with defaults',error)}
     let priorityKeywords=weightedKeywordSelection(aiSettings?.target_keywords);
+    if(selectedChip&&!priorityKeywords.some(item=>item.toLowerCase()===selectedChip.toLowerCase()))priorityKeywords.unshift(selectedChip);
+    priorityKeywords=priorityKeywords.slice(0,5);
     const effectiveTone=text(aiSettings?.tone_preference)||personality;
     const areaSource=(aiSettings?.target_areas&&typeof aiSettings.target_areas==='object'?aiSettings.target_areas:{}) as Record<string,unknown>;
     const aiPrimaryArea=jsonList(areaSource.primary??areaSource.Primary)[0]||'';
@@ -301,7 +306,7 @@ Deno.serve(async(req)=>{
     const configuredTreatments=Array.from(new Set([...jsonList(aiSettings?.target_keywords),...services,...treatments].map(item=>item.trim()).filter(Boolean)));
     const selectedSpecificTreatment=treatments[0]||configuredTreatments[0]||selectedTreatment;
     const densityBand=selectDensity();
-    const generatedRating=Math.random()<.15?4:5;
+    const generatedRating=rating>=5?5:4;
     const includeAmbientCritique=generatedRating===4||Math.random()<.3;
     const microComplaint=generatedRating===4
       ? (language.startsWith('Hinglish')?'Add one small non-medical micro-complaint, such as a little wait at reception or parking being full, while keeping the treatment and doctor sentiment positive.':'Add one small non-medical micro-complaint, such as a short reception wait or parking being full, while keeping the treatment and doctor sentiment positive.')
@@ -483,7 +488,7 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
       similarities=Array.from({length:reviews.length},()=>0);
       console.warn('Using policy-safe fallback reviews',{doctor_id:doctor.id,parsed_count:reviews.length,generationAttempts});
     }
-    const insertRows=reviews.map((content,index)=>({doctor_id:doctor.id,content,embedding:reviewEmbeddings[index]||null,generation_metadata:{policy_version:'humanized-local-seo-v3-flash',model:GEMINI_MODEL,sla_timeout_ms:GEMINI_TIMEOUT_MS,request_sequence_24h:requestSequence,completed_requests_24h:completedRequestCount,cumulative_requests_24h:cumulativeRequestCount,identity_requests_24h:priorIdentityRequests,identity_cap_24h:maxIdentityRequests,actual_patient_rating:rating,generated_rating:generatedRating,density_band:densityBand,personality,tone_preference:effectiveTone,priority_keywords:priorityKeywords,selected_hooks:selectedHooks,clinic_locality_permission:flags.include_area_name?clinicLocality:'generic only',specific_treatment_permission:flags.include_treatment?selectedSpecificTreatment:'generic only',location_verified:locationVerified,distance_meters:distanceMeters,actual_sentence_count:content.split(/[.!?\n]+/).map(value=>value.trim()).filter(Boolean).length,word_count:content.trim().split(/\s+/).filter(Boolean).length,opening_pattern:opening(content),flags,usage_counts_24h:usageCounts,generation_attempts:generationAttempts,max_similarity:similarities[index]||0,similarity_threshold:.85,embedding_model:null,embedding_available:false,recent_openings_avoided:recentOpenings}}));
+    const insertRows=reviews.map((content,index)=>({doctor_id:doctor.id,content,embedding:reviewEmbeddings[index]||null,generation_metadata:{policy_version:'humanized-local-seo-v3-flash',model:GEMINI_MODEL,sla_timeout_ms:GEMINI_TIMEOUT_MS,request_sequence_24h:requestSequence,completed_requests_24h:completedRequestCount,cumulative_requests_24h:cumulativeRequestCount,identity_requests_24h:priorIdentityRequests,identity_cap_24h:maxIdentityRequests,actual_patient_rating:rating,generated_rating:generatedRating,selected_chip:selectedChip||null,density_band:densityBand,personality,tone_preference:effectiveTone,priority_keywords:priorityKeywords,selected_hooks:selectedHooks,clinic_locality_permission:flags.include_area_name?clinicLocality:'generic only',specific_treatment_permission:flags.include_treatment?selectedSpecificTreatment:'generic only',location_verified:locationVerified,distance_meters:distanceMeters,actual_sentence_count:content.split(/[.!?\n]+/).map(value=>value.trim()).filter(Boolean).length,word_count:content.trim().split(/\s+/).filter(Boolean).length,opening_pattern:opening(content),flags,usage_counts_24h:usageCounts,generation_attempts:generationAttempts,max_similarity:similarities[index]||0,similarity_threshold:.85,embedding_model:null,embedding_available:false,recent_openings_avoided:recentOpenings}}));
     let inserted:Array<{id:string;content:string}>=[];
     try{
       const result=await db.from('generated_reviews').insert(insertRows).select('id,content');
