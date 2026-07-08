@@ -30,12 +30,29 @@ function trendPoints(rows:TrendAggregate[],period:"daily"|"weekly"):TrendPoint[]
   }));
 }
 
+function dailyTrendsFromScans(rows:LegacyScan[],days=14):TrendPoint[]{
+  return Array.from({length:days},(_,index)=>{const date=new Date();date.setHours(0,0,0,0);date.setDate(date.getDate()-(days-1-index));const next=new Date(date);next.setDate(next.getDate()+1);const matches=rows.filter(row=>{const value=new Date(row.created_at);return value>=date&&value<next});return {label:date.toLocaleDateString("en-IN",{day:"numeric",month:"short"}),scans:matches.length,posts:matches.filter(row=>row.redirected_to_gmb).length};});
+}
+
+function weeklyTrendsFromScans(rows:LegacyScan[],weeks=8):TrendPoint[]{
+  return Array.from({length:weeks},(_,index)=>{const end=new Date();end.setHours(23,59,59,999);end.setDate(end.getDate()-((weeks-1-index)*7));const start=new Date(end);start.setHours(0,0,0,0);start.setDate(start.getDate()-6);const matches=rows.filter(row=>{const value=new Date(row.created_at);return value>=start&&value<=end});return {label:index===weeks-1?"This week":`${weeks-1-index}w`,scans:matches.length,posts:matches.filter(row=>row.redirected_to_gmb).length};});
+}
+
+function eventsFromScans(rows:LegacyScan[]):DashboardEvent[]{
+  return rows.flatMap(row=>{
+    const events:DashboardEvent[]=[{id:`${row.id}-scan`,created_at:row.created_at,event_type:"scan"}];
+    if(row.review_copied)events.push({id:`${row.id}-copy`,created_at:row.created_at,event_type:"copy"});
+    if(row.redirected_to_gmb)events.push({id:`${row.id}-click_maps`,created_at:row.created_at,event_type:"click_maps"});
+    return events;
+  }).sort((a,b)=>new Date(b.created_at).getTime()-new Date(a.created_at).getTime());
+}
+
 async function syncAnalyticsEventsFromScans(doctorId:string){
   const admin=createAdminClient();
   if(!admin)return;
   for(let from=0;;from+=1000){
     const {data,error}=await admin.from("scans").select("id,created_at,review_copied,redirected_to_gmb").eq("doctor_id",doctorId).order("created_at",{ascending:true}).range(from,from+999);
-    if(error){console.error("Dashboard analytics scan sync failed:",error.message);return;}
+    if(error){console.error("Dashboard analytics scan sync failed:",error.message);await admin.from("system_error_logs").insert({doctor_id:doctorId,endpoint:"dashboard.analytics.sync",error_message:error.message.slice(0,1000),severity:"error"});return;}
     const rows=(data??[]) as LegacyScan[];
     if(!rows.length)return;
     const events=rows.flatMap(row=>{
@@ -46,7 +63,7 @@ async function syncAnalyticsEventsFromScans(doctorId:string){
     });
     if(events.length){
       const {error:upsertError}=await admin.from("analytics_events").upsert(events,{onConflict:"scan_id,event_type"});
-      if(upsertError){console.error("Dashboard analytics event sync failed:",upsertError.message);return;}
+      if(upsertError){console.error("Dashboard analytics event sync failed:",upsertError.message);await admin.from("system_error_logs").insert({doctor_id:doctorId,endpoint:"dashboard.analytics.sync",error_message:upsertError.message.slice(0,1000),severity:"error"});return;}
     }
     if(rows.length<1000)return;
   }
@@ -58,24 +75,33 @@ export default async function Dashboard() {
   if (doctor.auth_user_id !== user.id) throw new Error("Forbidden");
   await syncAnalyticsEventsFromScans(doctor.id);
   const analyticsDb = createAdminClient() || supabase;
-  const [scansResult, copiedResult, postedResult, recentEventsResult, trendResult] = await Promise.all([
+  const trendSince=new Date(Date.now()-56*24*60*60*1000).toISOString();
+  const [scansResult, copiedResult, postedResult, recentEventsResult, trendResult, legacyScansResult, legacyCopiedResult, legacyPostedResult, legacyTrendResult] = await Promise.all([
     analyticsDb.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "scan"),
     analyticsDb.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "copy"),
     analyticsDb.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "click_maps"),
     analyticsDb.from("analytics_events").select("id,created_at,event_type").eq("doctor_id", doctor.id).order("created_at", { ascending: false }).limit(20),
     supabase.rpc("get_dashboard_analytics_trends", { target_doctor_id: doctor.id, daily_days: 14, weekly_weeks: 8 }),
+    supabase.from("scans").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id),
+    supabase.from("scans").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("review_copied", true),
+    supabase.from("scans").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("redirected_to_gmb", true),
+    supabase.from("scans").select("id,created_at,review_copied,redirected_to_gmb").eq("doctor_id", doctor.id).gte("created_at", trendSince).order("created_at"),
   ]);
-  const analyticsError=scansResult.error||copiedResult.error||postedResult.error||recentEventsResult.error||trendResult.error;
+  const analyticsError=scansResult.error||copiedResult.error||postedResult.error||recentEventsResult.error||trendResult.error||legacyScansResult.error||legacyCopiedResult.error||legacyPostedResult.error||legacyTrendResult.error;
   if(analyticsError)throw new Error(`Unable to load dashboard analytics: ${analyticsError.message}`);
 
-  const scans = scansResult.count ?? 0;
-  const copied = copiedResult.count ?? 0;
-  const posted = postedResult.count ?? 0;
+  const scans = Math.max(scansResult.count ?? 0, legacyScansResult.count ?? 0);
+  const copied = Math.max(copiedResult.count ?? 0, legacyCopiedResult.count ?? 0);
+  const posted = Math.max(postedResult.count ?? 0, legacyPostedResult.count ?? 0);
   const conversion = scans ? (posted / scans) * 100 : 0;
-  const recent = ((recentEventsResult.data??[]) as DashboardEvent[]).slice(0,6);
   const trendRows=(trendResult.data??[]) as TrendAggregate[];
-  const dailyPoints=trendPoints(trendRows,"daily");
-  const weeklyPoints=trendPoints(trendRows,"weekly");
+  const legacyTrendRows=(legacyTrendResult.data??[]) as LegacyScan[];
+  const recentAnalytics=((recentEventsResult.data??[]) as DashboardEvent[]).slice(0,6);
+  const recent = recentAnalytics.length ? recentAnalytics : eventsFromScans(legacyTrendRows).slice(0,6);
+  const dailyAnalyticsPoints=trendPoints(trendRows,"daily");
+  const weeklyAnalyticsPoints=trendPoints(trendRows,"weekly");
+  const dailyPoints=dailyAnalyticsPoints.some(point=>point.scans||point.posts)?dailyAnalyticsPoints:dailyTrendsFromScans(legacyTrendRows);
+  const weeklyPoints=weeklyAnalyticsPoints.some(point=>point.scans||point.posts)?weeklyAnalyticsPoints:weeklyTrendsFromScans(legacyTrendRows);
   const today = new Intl.DateTimeFormat("en-IN", { weekday: "long", day: "numeric", month: "long" }).format(new Date()).toUpperCase();
   const isStarter = (doctor.subscription_tier?.trim().toLowerCase() || "starter") === "starter";
   const isGrowth = doctor.subscription_tier?.trim().toLowerCase() === "growth";

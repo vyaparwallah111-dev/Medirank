@@ -3,6 +3,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
@@ -48,6 +50,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, scan_id: scanId });
   } catch (error) {
     console.error("Analytics event capture failed:", error);
+    const admin = createAdminClient();
+    if (admin) {
+      try {
+        await admin.from("system_error_logs").insert({
+          endpoint: "api/analytics/event",
+          error_message: errorMessage(error).slice(0, 1000),
+          severity: "error",
+        });
+      } catch (logError) {
+        console.error("Analytics error log insert failed:", logError);
+      }
+    }
     return NextResponse.json({ error: "Unable to record analytics event." }, { status: 500 });
   }
 }
