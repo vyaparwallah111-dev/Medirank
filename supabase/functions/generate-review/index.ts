@@ -64,12 +64,30 @@ function settingsContext(settings:DoctorAISettings|null,selectedKeywords:string[
   const usp=jsonList(settings.usp_points);
   const tone=text(settings.tone_preference);
   return `AI Knowledge Base Context:
-- Selected priority keywords to weave naturally: ${selectedKeywords.join(', ')||'none'}.
+- Selected priority keywords are semantic seeds, not copy-paste text: ${selectedKeywords.join(', ')||'none'}.
 - Primary target areas: ${primaryAreas.join(', ')||targetAreas[0]||'none'}.
 - Secondary target areas: ${secondaryAreas.join(', ')||targetAreas.slice(1).join(', ')||'none'}.
 - Common patient concerns to acknowledge only if relevant: ${concerns.join(', ')||'none'}.
 - Clinic USP points to reflect without exaggeration: ${usp.join(', ')||'none'}.
 - Doctor tone preference: ${tone||'natural, conversational'}.`;
+}
+
+function semanticExpansionInstruction(priorityKeywords:string[],selectedSpecificTreatment:string,language:string,includeAmbientCritique:boolean){
+  const seedList=priorityKeywords.length?priorityKeywords.join(', '):'none';
+  return `SEMANTIC KEYWORD EXPANSION ENGINE:
+- Treat target keywords as meaning seeds only. NEVER blindly copy-paste exact keyword strings from settings, priority buckets, selected services, or user inputs unless the treatment cap explicitly allows one exact treatment mention.
+- Convert seeds into natural patient situations, sensory details, and everyday phrasing. Examples:
+  * "painless teeth extract" -> "the extraction was smooth", "was nervous about the pulling but it was handled well", "felt only mild discomfort for a short time".
+  * "root canal" -> "RCT treatment", "fixing my nerve pain", "tooth work for pain relief", "the procedure for my painful tooth".
+  * "clean clinic" -> "the place felt hygienic", "the setup looked neat", "instruments and seating area felt well maintained".
+- Current semantic seeds: ${seedList}. Specific treatment seed: ${selectedSpecificTreatment||'none'}.
+- Use semantic variety across options: one option may mention the clinical process, one may mention staff/reception, one may mention nervousness becoming comfort, and one may mention location/convenience only when allowed by locality caps.
+
+TRUST ENGINE - AMBIENT HUMAN CONTEXT:
+- ${includeAmbientCritique?'Include exactly one harmless human imperfection in one or two drafts maximum.':'Do not force a complaint unless it sounds natural; if used, keep it very small and harmless.'}
+- Allowed imperfections: slight waiting time, clinic being crowded, parking being a bit difficult, mild temporary post-procedure sensitivity, needing a little extra explanation, or reception rush.
+- Forbidden critiques: unsafe treatment, wrong diagnosis, poor hygiene, rude doctor, failed outcome, billing dispute, infection, severe pain, or anything that damages clinical trust.
+- Keep every draft clinically positive and honest for a ${language} Google review.`;
 }
 async function logSystemError(db:ReturnType<typeof createClient>|null,doctorId:string|null,errorMessage:string){
   if(!db)return;
@@ -284,9 +302,12 @@ Deno.serve(async(req)=>{
     const selectedSpecificTreatment=treatments[0]||configuredTreatments[0]||selectedTreatment;
     const densityBand=selectDensity();
     const generatedRating=Math.random()<.15?4:5;
+    const includeAmbientCritique=generatedRating===4||Math.random()<.3;
     const microComplaint=generatedRating===4
       ? (language.startsWith('Hinglish')?'Add one small non-medical micro-complaint, such as a little wait at reception or parking being full, while keeping the treatment and doctor sentiment positive.':'Add one small non-medical micro-complaint, such as a short reception wait or parking being full, while keeping the treatment and doctor sentiment positive.')
-      : 'Do not add complaints. Keep the sentiment clearly 5-star positive.';
+      : includeAmbientCritique
+        ? (language.startsWith('Hinglish')?'Optionally add one tiny human observation in only one draft, like halka wait, crowd, parking issue, or mild temporary sensitivity, but keep the review clearly 5-star positive.':'Optionally add one tiny human observation in only one draft, such as a short wait, crowd, parking issue, or mild temporary sensitivity, while keeping the review clearly 5-star positive.')
+        : 'Do not add complaints. Keep the sentiment clearly 5-star positive.';
 
     const dailySince=new Date(Date.now()-86_400_000).toISOString();
     let generatedRowCount=0;
@@ -366,6 +387,7 @@ Deno.serve(async(req)=>{
     const treatmentInstruction=flags.include_treatment
       ? `Specific treatment allowed: naturally mention "${selectedSpecificTreatment}" in at most one review.`
       : 'Specific treatment capped: do not mention exact procedure names. Use broad phrases like "the standard procedure", "my treatment", or "the visit".';
+    const semanticInstruction=semanticExpansionInstruction(priorityKeywords,selectedSpecificTreatment,language,includeAmbientCritique);
     const prompt=`Help a real patient draft honest Google review options based only on the factual details they selected.
 ${identityInstruction}
 ${localityInstruction}
@@ -378,19 +400,21 @@ Tone profile: ${personality}. ${personalities[personality]}
 ${aiKnowledgeContext}
 Dynamic tone directive: ${effectiveTone}. Use it as a soft voice guide while preserving the ${generatedRating}/5 sentiment.
 ${language.startsWith('Hinglish')?'Generate natural Hinglish in Hindi written only in Latin script. Across the four variants, use natural Hindi-English vocabulary without Devanagari or awkward literal translations.':''}
+${semanticInstruction}
 
-CRITICAL: Follow the identity, locality, and treatment caps above exactly. Never invent a person, medical outcome, parking issue, seating issue, or operational detail unless the 4-star micro-complaint rule explicitly asks for one small non-medical issue. Preserve a realistic ${generatedRating}/5 sentiment. ${flags.include_superlative?'A superlative may appear in at most one option and only when directly supported by the patient-selected wording.':'Do not use superlatives such as best, amazing, excellent, perfect, or outstanding.'}
+CRITICAL: Follow the identity, locality, and treatment caps above exactly. Never invent a person, medical outcome, parking issue, seating issue, or operational detail unless the Trust Engine allows one small non-medical human observation. Preserve a realistic ${generatedRating}/5 sentiment. ${flags.include_superlative?'A superlative may appear in at most one option and only when directly supported by the patient-selected wording.':'Do not use superlatives such as best, amazing, excellent, perfect, or outstanding.'}
 Do not begin any option with these recently used opening patterns: ${recentOpenings.length?recentOpenings.join(' | '):'none'}.
 Opening hook entropy: start the four reviews with these hooks in varied order, and do not reuse the same grammar architecture: ${selectedHooks.join(' | ')}.
 Length density selected by probability matrix: ${densityInstruction(densityBand)}
-Naturally weave selected priority keywords only where they sound organic: ${priorityKeywords.join(', ')||'none'}.
+Never keyword-stuff. If a semantic seed does not fit naturally, omit it. It is better to sound human than to include every seed.
 Add tiny human conversational imperfections sparingly: occasional casual casing such as "dr", light Hinglish typing like "acha", or one small grammar slip. Keep the text readable and sincere.
 
 STRUCTURAL VARIATION RULES FOR THE FOUR VARIANTS:
-1. Option 1: Use hook "${selectedHooks[0]}" and keep it conversational.
-2. Option 2: Use hook "${selectedHooks[1]}" and focus on selected facts only.
-3. Option 3: Use hook "${selectedHooks[2]}" and vary sentence rhythm.
-4. Option 4: Use hook "${selectedHooks[3]}" and make it ${language.startsWith('Hinglish')?'natural localized Hinglish using mixed Hindi-English vocabulary in Latin script.':'distinctly worded conversational English.'}
+1. Option 1: Use hook "${selectedHooks[0]}"; angle = casual first-person patient who felt reassured after concern or confusion.
+2. Option 2: Use hook "${selectedHooks[1]}"; angle = short, practical review focused on clarity, clinic flow, staff, and cleanliness.
+3. Option 3: Use hook "${selectedHooks[2]}"; angle = detailed treatment journey with a distinct chronology and one naturally expanded treatment phrase if permitted.
+4. Option 4: Use hook "${selectedHooks[3]}"; angle = ${language.startsWith('Hinglish')?'localized Hinglish story with mixed Hindi-English vocabulary; do not invent a name, student identity, friend recommendation, month, or long personal backstory unless the patient note supplies it.':'conversational English with a different sentence rhythm and perspective from the other three.'}
+Each option must have a different opening grammar, different sentence length pattern, and different emphasis. Do not recycle the same praise sequence in multiple drafts.
 
 CRITICAL OUTPUT RULES:
 Generate exactly ${targetCount} unique, distinct review variants separated by the tags [REVIEW] and [/REVIEW]. Each review must have line breaks matching the selected density. Reflect the ${generatedRating}/5 rating honestly. If a patient note exists, preserve its factual meaning without exaggeration. Wrap every variant strictly inside [REVIEW] and [/REVIEW].
