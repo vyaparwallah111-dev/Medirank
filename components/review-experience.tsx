@@ -76,6 +76,7 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
   const [patientLocation, setPatientLocation] = useState<Location | null>(null);
   const [showThankYou, setShowThankYou] = useState(false);
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [analyticsScanId, setAnalyticsScanId] = useState(scanId);
   const stepRefs = useRef<Array<HTMLElement | null>>([]);
 
   useEffect(() => {
@@ -155,7 +156,7 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
       setReviews(nextReviews);
       setRecentHooks(nextReviews.map((review)=>review.split(/\n+/)[0]?.trim()).filter(Boolean).slice(-5));
       const supabase=createClient();
-      if(supabase&&scanId)void supabase.functions.invoke("mark-scan",{body:{scan_id:scanId,event:"generated"}});
+      if(supabase&&analyticsScanId)void supabase.functions.invoke("mark-scan",{body:{scan_id:analyticsScanId,event:"generated"}});
       advance(5);
     } catch(requestError) {
       console.error("generate-review request failed; using local fallback",requestError);
@@ -169,16 +170,17 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
   }
 
   async function logAnalyticsEvent(eventType: "copy" | "click_maps") {
-    if (!scanId) { console.error("Analytics event skipped: scan session is unavailable.", { doctorId: doctor.id, eventType }); return; }
     try {
       const response = await fetch("/api/analytics/event", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ doctor_id: doctor.id, scan_id: scanId, event_type: eventType }),
+        body: JSON.stringify({ doctor_id: doctor.id, scan_id: analyticsScanId, event_type: eventType }),
         keepalive: eventType === "click_maps",
       });
       if (!response.ok) console.error("Analytics event returned non-ok status", { eventType, status: response.status, statusText: response.statusText, body: await response.text() });
       else {
+        const result = await response.json() as { scan_id?: string };
+        if (result.scan_id) setAnalyticsScanId(result.scan_id);
         window.dispatchEvent(new CustomEvent("medirank:analytics-event", { detail: { eventType } }));
         localStorage.setItem("medirank_analytics_pulse", `${Date.now()}:${eventType}`);
       }
@@ -191,7 +193,7 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
     try {
       await Promise.all([navigator.clipboard.writeText(review), logAnalyticsEvent("copy")]);
       const supabase = createClient();
-      if (supabase && scanId) void supabase.functions.invoke("mark-scan", { body: { scan_id: scanId, event: "copied" } });
+      if (supabase && analyticsScanId) void supabase.functions.invoke("mark-scan", { body: { scan_id: analyticsScanId, event: "copied" } });
       setCurrentStep(7);
       setShowThankYou(true);
     } catch { console.error(t.copyError); }
@@ -201,7 +203,7 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
     if (!googleEnabled) return;
     void logAnalyticsEvent("click_maps");
     const supabase = createClient();
-    if (supabase && scanId) void supabase.functions.invoke("mark-scan", { body: { scan_id: scanId, event: "posted" } });
+    if (supabase && analyticsScanId) void supabase.functions.invoke("mark-scan", { body: { scan_id: analyticsScanId, event: "posted" } });
   }
 
   const Bubble = ({ children, orange = false }: { children: React.ReactNode; orange?: boolean }) => <div className={`absolute -top-14 left-4 z-10 max-w-[calc(100%-2rem)] rounded-2xl px-4 py-3 text-sm font-extrabold text-white shadow-xl ${orange ? "bg-[#F37021]" : "bg-[#0A4C95]"}`}><span className={`absolute -bottom-2 left-7 h-4 w-4 rotate-45 ${orange ? "bg-[#F37021]" : "bg-[#0A4C95]"}`} /> <span className="relative">{children}</span></div>;

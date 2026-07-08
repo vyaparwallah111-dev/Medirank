@@ -44,7 +44,8 @@ export default async function PatientPage({params}:PageProps){
       supabase.from('scans').insert({doctor_id:doctor.id,user_agent:'web'}).select('id').single(),
     ]);
     const keywords=keywordResult.status==='fulfilled'?(keywordResult.value.data??[]):[];
-    const scan=scanResult.status==='fulfilled'?scanResult.value.data:null;
+    if(scanResult.status==='fulfilled'&&scanResult.value.error)console.error('Patient page scan session insert failed:',scanResult.value.error.message);
+    const scan=scanResult.status==='fulfilled'&&!scanResult.value.error?scanResult.value.data:null;
     if(scan?.id){
       const {error:analyticsError}=await supabase.from('analytics_events').upsert({doctor_id:doctor.id,scan_id:scan.id,event_type:'scan'},{onConflict:'scan_id,event_type'});
       if(analyticsError)console.error('Patient page scan analytics insert failed:',analyticsError.message);

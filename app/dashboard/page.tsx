@@ -3,6 +3,7 @@ import { ArrowUpRight, ClipboardCheck, LockKeyhole, QrCode, ScanLine, Send, Star
 import { displayDoctorName, getAuthenticatedUser, getCurrentDoctor } from "@/lib/dashboard";
 import { DirectLinkShare } from "@/components/direct-link-share";
 import { DashboardAutoRefresh } from "@/components/dashboard-auto-refresh";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -10,6 +11,7 @@ export const revalidate = 0;
 type TrendPoint = { label: string; scans: number; posts: number };
 type DashboardEvent = { id: string; created_at: string; event_type: "scan" | "copy" | "click_maps" };
 type TrendAggregate = { period: "daily" | "weekly"; bucket_start: string; scans: number | string; posts: number | string };
+type LegacyScan = { id: string; created_at: string; review_copied: boolean | null; redirected_to_gmb: boolean | null };
 
 function TrendChart({title,subtitle,points}:{title:string;subtitle:string;points:TrendPoint[]}) {
   const max=Math.max(1,...points.flatMap(point=>[point.scans,point.posts]));
@@ -28,17 +30,41 @@ function trendPoints(rows:TrendAggregate[],period:"daily"|"weekly"):TrendPoint[]
   }));
 }
 
+async function syncAnalyticsEventsFromScans(doctorId:string){
+  const admin=createAdminClient();
+  if(!admin)return;
+  for(let from=0;;from+=1000){
+    const {data,error}=await admin.from("scans").select("id,created_at,review_copied,redirected_to_gmb").eq("doctor_id",doctorId).order("created_at",{ascending:true}).range(from,from+999);
+    if(error){console.error("Dashboard analytics scan sync failed:",error.message);return;}
+    const rows=(data??[]) as LegacyScan[];
+    if(!rows.length)return;
+    const events=rows.flatMap(row=>{
+      const items=[{doctor_id:doctorId,scan_id:row.id,event_type:"scan",created_at:row.created_at}];
+      if(row.review_copied)items.push({doctor_id:doctorId,scan_id:row.id,event_type:"copy",created_at:row.created_at});
+      if(row.redirected_to_gmb)items.push({doctor_id:doctorId,scan_id:row.id,event_type:"click_maps",created_at:row.created_at});
+      return items;
+    });
+    if(events.length){
+      const {error:upsertError}=await admin.from("analytics_events").upsert(events,{onConflict:"scan_id,event_type"});
+      if(upsertError){console.error("Dashboard analytics event sync failed:",upsertError.message);return;}
+    }
+    if(rows.length<1000)return;
+  }
+}
+
 export default async function Dashboard() {
   const doctor = await getCurrentDoctor();
   const { supabase, user } = await getAuthenticatedUser();
+  if (doctor.auth_user_id !== user.id) throw new Error("Forbidden");
+  await syncAnalyticsEventsFromScans(doctor.id);
+  const analyticsDb = createAdminClient() || supabase;
   const [scansResult, copiedResult, postedResult, recentEventsResult, trendResult] = await Promise.all([
-    supabase.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "scan"),
-    supabase.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "copy"),
-    supabase.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "click_maps"),
-    supabase.from("analytics_events").select("id,created_at,event_type").eq("doctor_id", doctor.id).order("created_at", { ascending: false }).limit(20),
+    analyticsDb.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "scan"),
+    analyticsDb.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "copy"),
+    analyticsDb.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "click_maps"),
+    analyticsDb.from("analytics_events").select("id,created_at,event_type").eq("doctor_id", doctor.id).order("created_at", { ascending: false }).limit(20),
     supabase.rpc("get_dashboard_analytics_trends", { target_doctor_id: doctor.id, daily_days: 14, weekly_weeks: 8 }),
   ]);
-  if (doctor.auth_user_id !== user.id) throw new Error("Forbidden");
   const analyticsError=scansResult.error||copiedResult.error||postedResult.error||recentEventsResult.error||trendResult.error;
   if(analyticsError)throw new Error(`Unable to load dashboard analytics: ${analyticsError.message}`);
 
