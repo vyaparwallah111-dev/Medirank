@@ -13,6 +13,20 @@ type Location = { latitude: number; longitude: number };
 
 const ThankYouAnimation = dynamic(() => import("./thank-you-animation"), { ssr: false });
 const fallback = { primary: "#0A4C95", accent: "#F37021", background: "#F8FAFC" };
+const localFallbackReviews: Record<Language, string[]> = {
+  english: [
+    "My clinic visit went well overall.\nThe dentist explained things clearly and the staff was polite.\nI felt comfortable through the appointment.",
+    "I had a good experience during my visit.\nThe clinic staff handled things smoothly, and the doctor answered my concerns.\nOverall it felt simple and reassuring.",
+    "The appointment was comfortable and well managed.\nThe dentist was patient while explaining the treatment.\nI left feeling satisfied with the visit.",
+    "My visit to the clinic was positive.\nThe team was helpful, the place felt clean, and the doctor guided me properly.\nWould recommend for a calm dental visit.",
+  ],
+  hinglish: [
+    "Clinic visit ka experience kaafi acha raha.\nStaff helpful tha aur dr ne baat clearly samjhai.\nOverall mujhe comfortable feel hua.",
+    "Mera treatment visit smooth raha.\nThe dentist ne calmly guide kiya, zyada rush jaisa feel nahi hua.\nClinic ka environment bhi neat tha.",
+    "Aaj ka visit genuinely theek laga.\nStaff ne process simple rakha aur doctor se baat karke confidence aaya.\nMain overall satisfied hoon.",
+    "Clinic mein experience acha tha.\nDoctor aur team ne concerns dhyan se sune, bas normal sa friendly vibe tha.\nFollow-up ke liye bhi clear guidance mili.",
+  ],
+};
 const copy = {
   english: {
     chooseLanguage: "Choose your language", languageHint: "Select the language you feel most comfortable with.", welcome: "How was your visit with", quest: "Review Spotlight", step: "Step",
@@ -42,7 +56,6 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
   const [customNotes, setCustomNotes] = useState("");
   const [reviews, setReviews] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [validationError, setValidationError] = useState("");
   const [deviceToken, setDeviceToken] = useState("");
   const [patientLocation, setPatientLocation] = useState<Location | null>(null);
@@ -98,27 +111,27 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
 
   async function generate() {
     if (currentStep !== 5 || !currentLanguage) return;
-    setLoading(true); setError(null);
+    setLoading(true);
     const token=deviceToken||crypto.randomUUID();
     if(!deviceToken)setDeviceToken(token);
-    const fallback=currentLanguage==="hinglish"
-      ? ["Mera clinic visit achha raha.","Doctor aur clinic staff ke saath mera overall experience positive raha.","Main clinic ke experience se satisfied hoon.","Mere visit ke basis par clinic ka experience achha raha."]
-      : ["I had a positive experience during my clinic visit.","My overall visit with the doctor and clinic staff was good.","I am satisfied with my experience at the clinic.","Based on my visit, my experience with the clinic was positive."];
+    const fallback=localFallbackReviews[currentLanguage];
     try {
       const supabaseUrl=process.env.NEXT_PUBLIC_SUPABASE_URL;
       const anonKey=process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
       if(!supabaseUrl||!anonKey)throw new Error("Review generation is not configured.");
+      const controller=new AbortController();
+      const timeout=window.setTimeout(()=>controller.abort(),8000);
       const response=await fetch(`${supabaseUrl.replace(/\/$/,"")}/functions/v1/generate-review`,{
         method:"POST",
         headers:{"Content-Type":"application/json",apikey:anonKey,Authorization:`Bearer ${anonKey}`},
         body:JSON.stringify({doctor_id:doctor.id,selected_keywords:selectedExperiences,selected_treatments:selectedServices,selected_treatment_keyword:selectedServices[0]||null,rating:5,custom_notes:customNotes.trim()||null,language:currentLanguage,device_token:token,...(patientLocation||{})}),
-      });
+        signal:controller.signal,
+      }).finally(()=>window.clearTimeout(timeout));
       const responseText=await response.text();
       if(!response.ok)console.error("generate-review non-ok response",{status:response.status,statusText:response.statusText,body:responseText});
       let data:Record<string,unknown>={};
       try{data=responseText?JSON.parse(responseText) as Record<string,unknown>:{};}catch(parseError){console.error("generate-review invalid JSON response",{status:response.status,statusText:response.statusText,body:responseText,parseError});}
       const returned=Array.isArray(data.reviews)?data.reviews.filter((review:unknown):review is string=>typeof review==="string"&&review.trim().length>0).map(review=>review.trim()).slice(0,5):[];
-      if(typeof data.error==="string"){setError(data.error);return;}
       if(!response.ok||returned.length<2){setReviews(fallback);}
       else setReviews(returned);
       const supabase=createClient();
@@ -155,7 +168,7 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
       if (supabase && scanId) void supabase.functions.invoke("mark-scan", { body: { scan_id: scanId, event: "copied" } });
       setCurrentStep(7);
       setShowThankYou(true);
-    } catch { setError(t.copyError); }
+    } catch { console.error(t.copyError); }
   }
 
   function trackGoogleProceed() {
@@ -186,9 +199,9 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
 
       <section ref={(node) => { stepRefs.current[3] = node; }} className={levelClass(3)}><Bubble>{t.notesBubble}</Bubble><h2 className="text-xl font-black">{t.notesTitle} <span className="text-sm">({t.optional})</span></h2><textarea value={customNotes} onChange={(event) => setCustomNotes(event.target.value.slice(0, 500))} rows={4} maxLength={500} placeholder={t.notesPlaceholder} className="input mt-4 resize-y text-base text-slate-950 placeholder:text-slate-600" /><p className="mt-2 text-right text-xs font-black">{customNotes.length}/500</p><button type="button" onClick={() => advance(4)} className="mt-4 min-h-12 w-full rounded-xl bg-[#0A4C95] px-5 font-black text-white">{t.next}</button></section>
 
-      <section ref={(node) => { stepRefs.current[4] = node; }} className={levelClass(4)}><Bubble orange>{t.generateBubble}</Bubble><h2 className="text-xl font-black">{t.generateTitle}</h2>{error && <p className="mt-4 rounded-xl bg-red-100 p-3 text-sm font-bold text-red-900">{error}</p>}<button type="button" onClick={generate} disabled={loading} className="mt-5 flex min-h-14 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-5 font-black text-white shadow-[0_0_24px_rgba(10,76,149,.45)] disabled:opacity-40">{loading ? <><Loader2 size={20} className="animate-spin" />{t.generating}</> : <><Sparkles size={20} />{t.generate}</>}</button></section>
+      <section ref={(node) => { stepRefs.current[4] = node; }} className={levelClass(4)}><Bubble orange>{t.generateBubble}</Bubble><h2 className="text-xl font-black">{t.generateTitle}</h2><button type="button" onClick={generate} disabled={loading} className="mt-5 flex min-h-14 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-5 font-black text-white shadow-[0_0_24px_rgba(10,76,149,.45)] disabled:opacity-40">{loading ? <><Loader2 size={20} className="animate-spin" />{t.generating}</> : <><Sparkles size={20} />{t.generate}</>}</button></section>
 
-      <section ref={(node) => { stepRefs.current[5] = node; }} className={levelClass(5)}><Bubble>{t.draftsBubble}</Bubble><h2 className="text-xl font-black">{t.draftsTitle}</h2>{error && <p className="mt-4 rounded-xl bg-red-100 p-3 text-sm font-bold text-red-900">{error}</p>}<div className="mt-4 space-y-4">{reviews.map((review, index) => <article key={index} className="rounded-2xl border-2 border-slate-200 p-4"><div className="flex gap-1 text-[#F37021]">{Array.from({ length: 5 }).map((_, star) => <Star key={star} fill="currentColor" size={14} />)}</div><p className="mt-3 text-base font-semibold leading-7">{review}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-4 font-black text-white"><Clipboard size={18} />{t.copyReview}</button></article>)}</div></section>
+      <section ref={(node) => { stepRefs.current[5] = node; }} className={levelClass(5)}><Bubble>{t.draftsBubble}</Bubble><h2 className="text-xl font-black">{t.draftsTitle}</h2><div className="mt-4 space-y-4">{reviews.map((review, index) => <article key={index} className="rounded-2xl border-2 border-slate-200 p-4"><div className="flex gap-1 text-[#F37021]">{Array.from({ length: 5 }).map((_, star) => <Star key={star} fill="currentColor" size={14} />)}</div><p className="mt-3 whitespace-pre-line text-base font-semibold leading-7">{review}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-4 font-black text-white"><Clipboard size={18} />{t.copyReview}</button></article>)}</div></section>
     </div>
     <BrandFooter />
 
