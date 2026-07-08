@@ -71,6 +71,19 @@ function settingsContext(settings:DoctorAISettings|null,selectedKeywords:string[
 - Clinic USP points to reflect without exaggeration: ${usp.join(', ')||'none'}.
 - Doctor tone preference: ${tone||'natural, conversational'}.`;
 }
+function databaseTargetContext(doctor:{doctor_name?:unknown;clinic_name?:unknown;city?:unknown},primaryArea:string,clinicLocality:string,targetKeywords:string[]){
+  return `DATABASE TARGET KNOWLEDGE - MUST BE AVAILABLE TO EVERY DRAFT:
+- doctor_name: ${text(doctor.doctor_name)||'not supplied'}
+- clinic_name: ${text(doctor.clinic_name)||'not supplied'}
+- primary_area: ${primaryArea||clinicLocality||text(doctor.city)||'not supplied'}
+- chosen_target_locality: ${clinicLocality||primaryArea||text(doctor.city)||'not supplied'}
+- target_keywords: ${targetKeywords.join(', ')||'none'}
+Use these as hard factual grounding. Do not replace the supplied clinic/locality with generic wording when the anchor rule requires it.`;
+}
+const includesAnyPhrase=(content:string,phrases:string[])=>{
+  const normalized=normalize(content);
+  return phrases.some(phrase=>phrase&&normalized.includes(normalize(phrase)));
+};
 
 function semanticExpansionInstruction(priorityKeywords:string[],selectedSpecificTreatment:string,language:string,includeAmbientCritique:boolean){
   const seedList=priorityKeywords.length?priorityKeywords.join(', '):'none';
@@ -303,6 +316,7 @@ Deno.serve(async(req)=>{
     const aiPrimaryArea=jsonList(areaSource.primary??areaSource.Primary)[0]||'';
     const aiSecondaryArea=jsonList(areaSource.secondary??areaSource.Secondary)[0]||'';
     const clinicLocality=aiPrimaryArea||aiSecondaryArea||[area,city].filter(value=>value&&value!=='the local area').join(', ')||area;
+    const primaryArea=aiPrimaryArea||area;
     const configuredTreatments=Array.from(new Set([...jsonList(aiSettings?.target_keywords),...services,...treatments].map(item=>item.trim()).filter(Boolean)));
     const selectedSpecificTreatment=treatments[0]||configuredTreatments[0]||selectedTreatment;
     const densityBand=selectDensity();
@@ -357,14 +371,23 @@ Deno.serve(async(req)=>{
     }catch(error){console.error('Daily phrase-cap audit lookup threw; using defaults',error)}
     const usageCounts:Record<UsageType,number>={doctor_name:0,clinic_name:0,area_name:0,treatment:0,superlative:0};
     for(const row of usageRows||[]){const kind=row.usage_type as UsageType;if(kind in usageCounts)usageCounts[kind]++}
+    const targetLocality=clinicLocality&&clinicLocality!=='the local area'?clinicLocality:(city&&city!=='the local area'?city:area);
     const allowSpecificLocalityAndTreatment=generatedRowCount<4;
     const flags={
       include_doctor_name:includeIdentity,
       include_clinic_name:includeIdentity,
-      include_area_name:allowSpecificLocalityAndTreatment&&usageCounts.area_name<4&&clinicLocality!=='the local area',
+      include_area_name:!!targetLocality&&targetLocality!=='the local area',
       include_treatment:allowSpecificLocalityAndTreatment&&usageCounts.treatment<4&&!!selectedSpecificTreatment,
       include_superlative:usageCounts.superlative<3,
     };
+    const requiredTargetAnchors=Array.from(new Set([
+      ...(flags.include_clinic_name?[text(doctor.clinic_name)]:[]),
+      ...(flags.include_area_name?[targetLocality]:[]),
+    ].map(item=>item.trim()).filter(Boolean)));
+    const targetAnchorInstruction=requiredTargetAnchors.length
+      ? `STRICT TARGET ANCHOR RULE: Every single generated review variant MUST naturally include at least one exact database target anchor from this list: ${requiredTargetAnchors.map(anchor=>`"${anchor}"`).join(' OR ')}. This rule applies to all ${targetCount} variants, not just one. Weave the anchor into normal patient language and do not keyword-stuff.`
+      : 'STRICT TARGET ANCHOR RULE: No exact clinic/locality anchor is available, so keep wording generic and do not invent a locality.';
+    const databaseContext=databaseTargetContext(doctor,primaryArea,targetLocality,priorityKeywords);
     let history:Array<{id:string;content:string;embedding:unknown}>=[];
     try{
       const result=await db.from('generated_reviews').select('id,content,embedding').eq('doctor_id',doctor.id).order('created_at',{ascending:false}).limit(10);
@@ -387,7 +410,7 @@ Deno.serve(async(req)=>{
       ? `IDENTITY 40% RULE: You may naturally use the actual doctor name "${text(doctor.doctor_name)}" and clinic name "${text(doctor.clinic_name)}" in this request because the rolling 24-hour identity exposure is still below 40%. Use exact names sparingly across the four options; do not repeat either name in every option.`
       : `IDENTITY 40% RULE: You MUST NOT mention the specific names "${text(doctor.doctor_name)}" or "${text(doctor.clinic_name)}" anywhere in the text because the rolling 24-hour identity exposure has reached its limit. Use generic terms only: "the dentist", "the medical team", "this clinic", "the clinic staff", or "the doctor".`;
     const localityInstruction=flags.include_area_name
-      ? `Specific locality allowed: naturally mention "${clinicLocality}" in at most one review.`
+      ? `Specific locality required when clinic name is not the natural anchor: "${targetLocality}" is the chosen database target locality and may appear in every review as needed to satisfy the strict anchor rule.`
       : 'Specific locality capped: do not mention exact area, locality, city, neighborhood, or map-pack location. Use generic spatial language like "the clinic area" only if needed.';
     const treatmentInstruction=flags.include_treatment
       ? `Specific treatment allowed: naturally mention "${selectedSpecificTreatment}" in at most one review.`
@@ -396,12 +419,14 @@ Deno.serve(async(req)=>{
     const prompt=`Help a real patient draft honest Google review options based only on the factual details they selected.
 ${identityInstruction}
 ${localityInstruction}
+${targetAnchorInstruction}
 Service category: ${specialty}. Refer to the care provider only as ${providerTerm} or "the clinical staff".
 Selected aspect: ${aspects.join(', ')||'good care'}. ${treatmentInstruction}
 Patient-facing rating tier for all four drafts: ${generatedRating}/5. ${microComplaint}
 Original patient-selected rating: ${rating}/5. Patient factual note: ${customNotes||'None'}.
 Language: ${language}.
 Tone profile: ${personality}. ${personalities[personality]}
+${databaseContext}
 ${aiKnowledgeContext}
 Dynamic tone directive: ${effectiveTone}. Use it as a soft voice guide while preserving the ${generatedRating}/5 sentiment.
 ${language.startsWith('Hinglish')?'Generate natural Hinglish in Hindi written only in Latin script. Across the four variants, use natural Hindi-English vocabulary without Devanagari or awkward literal translations.':''}
@@ -423,6 +448,7 @@ Each option must have a different opening grammar, different sentence length pat
 
 CRITICAL OUTPUT RULES:
 Generate exactly ${targetCount} unique, distinct review variants separated by the tags [REVIEW] and [/REVIEW]. Each review must have line breaks matching the selected density. Reflect the ${generatedRating}/5 rating honestly. If a patient note exists, preserve its factual meaning without exaggeration. Wrap every variant strictly inside [REVIEW] and [/REVIEW].
+Every variant must pass the strict target anchor rule by including ${requiredTargetAnchors.length?requiredTargetAnchors.map(anchor=>`"${anchor}"`).join(' or '):'the available database target context'} naturally in the review text.
 Write conversational Indian customer-style options. Do not keyword-stuff, manipulate ratings, or add unsupported claims.
 Do not include any introduction, JSON, markdown, or surrounding conversational phrases.`;
     let reviews:string[]=[],reviewEmbeddings:Array<number[]|null>=[],similarities:number[]=[],generationAttempts=0;
@@ -430,8 +456,9 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
       generationAttempts=attempt;
       const retryDirection=attempt===1?'':`\nORIGINALITY RETRY ${attempt}: The previous draft was too close to prior reviews. Change syntax, cadence, perspective, sentence order, and vocabulary while preserving only supplied facts. Avoid these openings: ${recentOpenings.join(' | ')}.`;
       const attemptPrompt=prompt+retryDirection;
-      const geminiPayload={contents:[{parts:[{text:attemptPrompt}]}],generationConfig:{temperature:Math.min(1,.78+attempt*.07),maxOutputTokens:2500}};
-      console.log('Gemini request',{model:GEMINI_MODEL,doctor_id:doctor.id,language,attempt,requestSequence,completedRequestCount,flags,densityBand,generatedRating,selectedHooks,usageCounts,priorityKeywords});
+      const systemContextParts=[databaseContext,targetAnchorInstruction,aiKnowledgeContext];
+      const geminiPayload={systemInstruction:{parts:systemContextParts.map(value=>({text:value}))},contents:[{parts:[...systemContextParts.map(value=>({text:value})),{text:attemptPrompt}]}],generationConfig:{temperature:Math.min(1,.78+attempt*.07),maxOutputTokens:2500}};
+      console.log('Gemini request',{model:GEMINI_MODEL,doctor_id:doctor.id,language,attempt,requestSequence,completedRequestCount,flags,densityBand,generatedRating,selectedHooks,usageCounts,priorityKeywords,requiredTargetAnchors});
       try{
         const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},GEMINI_TIMEOUT_MS);
         const responseText=await response.text();
@@ -449,6 +476,11 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
         ].map(normalize).filter(Boolean);
         if(forbiddenIdentities.length&&drafts.some(draft=>forbiddenIdentities.some(identity=>normalize(draft).includes(identity)))){
           console.error('Gemini violated 24-hour identity cap',{doctor_id:doctor.id,attempt});
+          continue;
+        }
+        if(requiredTargetAnchors.length&&drafts.some(draft=>!includesAnyPhrase(draft,requiredTargetAnchors))){
+          console.error('Gemini missed required database target anchors',{doctor_id:doctor.id,attempt,requiredTargetAnchors});
+          void logSystemError(db,doctor.id,`Gemini missed required target anchors: ${requiredTargetAnchors.join(', ')}`);
           continue;
         }
         const formatted=drafts.map(draft=>ensureLineShape(draft,fallbackLanguage,densityBand));
@@ -470,25 +502,28 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
     }else{
       const aspect=aspects[0]||'';
       const treatment=flags.include_treatment&&selectedSpecificTreatment?selectedSpecificTreatment:'';
+      const fallbackAnchor=requiredTargetAnchors[0]||'';
+      const hinglishAnchor=fallbackAnchor?`${fallbackAnchor} mein `:'';
+      const englishAnchor=fallbackAnchor?`at ${fallbackAnchor} `:'';
       const fallbackReviews=language.startsWith('Hinglish')
         ? [
-            `${includeIdentity?`${text(doctor.clinic_name)} mein ${text(doctor.doctor_name)} ke saath `:'Mera clinic '}visit achha raha.${aspect?` ${aspect} ka experience raha.`:''}`,
-            `${treatment?`${treatment} ke liye `:''}Visit ke dauran ${includeIdentity?text(doctor.doctor_name):'doctor'} aur staff ke saath experience comfortable raha.`,
-            `Clinic mein mera overall experience positive raha.${aspect?` Mujhe ${aspect} achha laga.`:''}`,
-            `Doctor aur clinic staff ke saath visit smooth raha.${treatment?` Main ${treatment} ke liye aaya tha.`:''}`,
+            `${hinglishAnchor}${includeIdentity?`${text(doctor.doctor_name)} ke saath `:'clinic '}visit achha raha.${aspect?` ${aspect} ka experience raha.`:''}`,
+            `${hinglishAnchor}${treatment?`${treatment} ke liye `:''}visit ke dauran ${includeIdentity?text(doctor.doctor_name):'doctor'} aur staff ke saath experience comfortable raha.`,
+            `${hinglishAnchor}clinic mein mera overall experience positive raha.${aspect?` Mujhe ${aspect} achha laga.`:''}`,
+            `${hinglishAnchor}doctor aur clinic staff ke saath visit smooth raha.${treatment?` Main ${treatment} ke liye aaya tha.`:''}`,
           ]
         : [
-            `I had a good experience ${includeIdentity?`with ${text(doctor.doctor_name)} at ${text(doctor.clinic_name)}`:'during my clinic visit'}.${aspect?` I appreciated ${aspect}.`:''}`,
-            `My ${treatment?`${treatment} `:''}visit with ${includeIdentity?text(doctor.doctor_name):'the doctor'} and staff felt comfortable.`,
-            `My overall experience at the clinic was positive.${aspect?` ${aspect} stood out during my visit.`:''}`,
-            `The visit with the doctor and clinic staff went smoothly.${treatment?` I visited for ${treatment}.`:''}`,
+            `I had a good experience ${englishAnchor}${includeIdentity?`with ${text(doctor.doctor_name)}`:'during my clinic visit'}.${aspect?` I appreciated ${aspect}.`:''}`,
+            `My ${treatment?`${treatment} `:''}visit ${englishAnchor}with ${includeIdentity?text(doctor.doctor_name):'the doctor'} and staff felt comfortable.`,
+            `My overall experience ${englishAnchor}was positive.${aspect?` ${aspect} stood out during my visit.`:''}`,
+            `The visit ${englishAnchor}with the doctor and clinic staff went smoothly.${treatment?` I visited for ${treatment}.`:''}`,
           ];
       reviews=Array.from(new Set([...reviews,...fallbackReviews,...emergencyDrafts(fallbackLanguage)].map(review=>ensureLineShape(review.trim(),fallbackLanguage,densityBand)).filter(Boolean))).slice(0,targetCount);
       reviewEmbeddings=Array.from({length:reviews.length},()=>null);
       similarities=Array.from({length:reviews.length},()=>0);
       console.warn('Using policy-safe fallback reviews',{doctor_id:doctor.id,parsed_count:reviews.length,generationAttempts});
     }
-    const insertRows=reviews.map((content,index)=>({doctor_id:doctor.id,content,embedding:reviewEmbeddings[index]||null,generation_metadata:{policy_version:'humanized-local-seo-v3-flash',model:GEMINI_MODEL,sla_timeout_ms:GEMINI_TIMEOUT_MS,request_sequence_24h:requestSequence,completed_requests_24h:completedRequestCount,cumulative_requests_24h:cumulativeRequestCount,identity_requests_24h:priorIdentityRequests,identity_cap_24h:maxIdentityRequests,actual_patient_rating:rating,generated_rating:generatedRating,selected_chip:selectedChip||null,density_band:densityBand,personality,tone_preference:effectiveTone,priority_keywords:priorityKeywords,selected_hooks:selectedHooks,clinic_locality_permission:flags.include_area_name?clinicLocality:'generic only',specific_treatment_permission:flags.include_treatment?selectedSpecificTreatment:'generic only',location_verified:locationVerified,distance_meters:distanceMeters,actual_sentence_count:content.split(/[.!?\n]+/).map(value=>value.trim()).filter(Boolean).length,word_count:content.trim().split(/\s+/).filter(Boolean).length,opening_pattern:opening(content),flags,usage_counts_24h:usageCounts,generation_attempts:generationAttempts,max_similarity:similarities[index]||0,similarity_threshold:.85,embedding_model:null,embedding_available:false,recent_openings_avoided:recentOpenings}}));
+    const insertRows=reviews.map((content,index)=>({doctor_id:doctor.id,content,embedding:reviewEmbeddings[index]||null,generation_metadata:{policy_version:'humanized-local-seo-v3-flash',model:GEMINI_MODEL,sla_timeout_ms:GEMINI_TIMEOUT_MS,request_sequence_24h:requestSequence,completed_requests_24h:completedRequestCount,cumulative_requests_24h:cumulativeRequestCount,identity_requests_24h:priorIdentityRequests,identity_cap_24h:maxIdentityRequests,actual_patient_rating:rating,generated_rating:generatedRating,selected_chip:selectedChip||null,density_band:densityBand,personality,tone_preference:effectiveTone,priority_keywords:priorityKeywords,primary_area:primaryArea,required_target_anchors:requiredTargetAnchors,selected_hooks:selectedHooks,clinic_locality_permission:flags.include_area_name?targetLocality:'generic only',specific_treatment_permission:flags.include_treatment?selectedSpecificTreatment:'generic only',location_verified:locationVerified,distance_meters:distanceMeters,actual_sentence_count:content.split(/[.!?\n]+/).map(value=>value.trim()).filter(Boolean).length,word_count:content.trim().split(/\s+/).filter(Boolean).length,opening_pattern:opening(content),flags,usage_counts_24h:usageCounts,generation_attempts:generationAttempts,max_similarity:similarities[index]||0,similarity_threshold:.85,embedding_model:null,embedding_available:false,recent_openings_avoided:recentOpenings}}));
     let inserted:Array<{id:string;content:string}>=[];
     try{
       const result=await db.from('generated_reviews').insert(insertRows).select('id,content');
@@ -501,7 +536,7 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
       const normalized=normalize(row.content);const push=(usage_type:UsageType,phrase:string)=>usageLogs.push({doctor_id:doctor.id,generated_review_id:row.id,usage_type,phrase});
       if(lowerDoctor&&normalized.includes(lowerDoctor))push('doctor_name',text(doctor.doctor_name));
       if(lowerClinic&&normalized.includes(lowerClinic))push('clinic_name',text(doctor.clinic_name));
-      if(flags.include_area_name&&[clinicLocality,area,city].some(value=>value&&normalized.includes(normalize(value))))push('area_name',clinicLocality);
+      if(flags.include_area_name&&[targetLocality,clinicLocality,area,city].some(value=>value&&normalized.includes(normalize(value))))push('area_name',targetLocality);
       if(flags.include_treatment&&normalized.includes(normalize(selectedSpecificTreatment)))push('treatment',selectedSpecificTreatment);
       const usedSuperlative=['best','amazing','excellent','perfect','outstanding'].find(word=>new RegExp(`\\b${word}\\b`,'i').test(row.content));if(usedSuperlative)push('superlative',usedSuperlative);
     }
