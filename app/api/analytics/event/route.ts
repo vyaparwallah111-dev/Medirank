@@ -4,21 +4,44 @@ import { createAdminClient } from "@/lib/supabase/admin";
 export const runtime = "nodejs";
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
+const validEvents = new Set(["scan", "copy", "click_maps"]);
+
+async function logAnalyticsError(endpoint: string, error: unknown, doctorId?: string) {
+  console.error(endpoint, error);
+  const admin = createAdminClient();
+  if (!admin) return;
+  try {
+    await admin.from("system_error_logs").insert({
+      doctor_id: doctorId || null,
+      endpoint,
+      error_message: errorMessage(error).slice(0, 1000),
+      severity: "error",
+    });
+  } catch (logError) {
+    console.error("Analytics error log insert failed:", logError);
+  }
+}
 
 export async function POST(request: Request) {
+  let doctorId = "";
   try {
-    const body = await request.json();
-    const doctorId = typeof body?.doctor_id === "string" ? body.doctor_id : "";
+    let body: Record<string, unknown> = {};
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ ok: false, error: "Invalid analytics payload." });
+    }
+    doctorId = typeof body?.doctor_id === "string" ? body.doctor_id : "";
     let scanId = typeof body?.scan_id === "string" ? body.scan_id : "";
-    const eventType = body?.event_type === "copy" || body?.event_type === "click_maps" ? body.event_type : null;
-    if (!doctorId || !eventType) return NextResponse.json({ error: "Invalid analytics event." }, { status: 400 });
+    const eventType = typeof body?.event_type === "string" && validEvents.has(body.event_type) ? body.event_type : null;
+    if (!doctorId || !eventType) return NextResponse.json({ ok: false, error: "Invalid analytics event." });
 
     const admin = createAdminClient();
-    if (!admin) return NextResponse.json({ error: "Analytics is unavailable." }, { status: 503 });
+    if (!admin) return NextResponse.json({ ok: false, error: "Analytics is unavailable." });
 
     const { data: doctor, error: doctorError } = await admin.from("doctors").select("id").eq("id", doctorId).eq("is_active", true).maybeSingle();
     if (doctorError) throw doctorError;
-    if (!doctor) return NextResponse.json({ error: "Unknown clinic." }, { status: 404 });
+    if (!doctor) return NextResponse.json({ ok: false, error: "Unknown clinic." });
 
     if (scanId) {
       const { data: scan, error: scanError } = await admin.from("scans").select("id").eq("id", scanId).eq("doctor_id", doctorId).maybeSingle();
@@ -32,9 +55,11 @@ export async function POST(request: Request) {
       scanId = scan.id;
     }
 
-    const scanFlag = eventType === "copy" ? { review_copied: true } : { redirected_to_gmb: true };
-    const { error: scanUpdateError } = await admin.from("scans").update(scanFlag).eq("id", scanId).eq("doctor_id", doctorId);
-    if (scanUpdateError) throw scanUpdateError;
+    if (eventType !== "scan") {
+      const scanFlag = eventType === "copy" ? { review_copied: true } : { redirected_to_gmb: true };
+      const { error: scanUpdateError } = await admin.from("scans").update(scanFlag).eq("id", scanId).eq("doctor_id", doctorId);
+      if (scanUpdateError) throw scanUpdateError;
+    }
 
     const { error: scanEventError } = await admin.from("analytics_events").upsert(
       { doctor_id: doctorId, scan_id: scanId, event_type: "scan" },
@@ -42,26 +67,16 @@ export async function POST(request: Request) {
     );
     if (scanEventError) throw scanEventError;
 
-    const { error: eventError } = await admin.from("analytics_events").upsert(
-      { doctor_id: doctorId, scan_id: scanId, event_type: eventType },
-      { onConflict: "scan_id,event_type" },
-    );
-    if (eventError) throw eventError;
+    if (eventType !== "scan") {
+      const { error: eventError } = await admin.from("analytics_events").upsert(
+        { doctor_id: doctorId, scan_id: scanId, event_type: eventType },
+        { onConflict: "scan_id,event_type" },
+      );
+      if (eventError) throw eventError;
+    }
     return NextResponse.json({ ok: true, scan_id: scanId });
   } catch (error) {
-    console.error("Analytics event capture failed:", error);
-    const admin = createAdminClient();
-    if (admin) {
-      try {
-        await admin.from("system_error_logs").insert({
-          endpoint: "api/analytics/event",
-          error_message: errorMessage(error).slice(0, 1000),
-          severity: "error",
-        });
-      } catch (logError) {
-        console.error("Analytics error log insert failed:", logError);
-      }
-    }
-    return NextResponse.json({ error: "Unable to record analytics event." }, { status: 500 });
+    await logAnalyticsError("api/analytics/event", error, doctorId);
+    return NextResponse.json({ ok: false, error: "Unable to record analytics event." });
   }
 }

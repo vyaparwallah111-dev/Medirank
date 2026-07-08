@@ -78,6 +78,14 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
   const [googleEnabled, setGoogleEnabled] = useState(false);
   const [analyticsScanId, setAnalyticsScanId] = useState(scanId);
   const stepRefs = useRef<Array<HTMLElement | null>>([]);
+  const analyticsScanIdRef = useRef<string | null>(scanId);
+  const scanInitializedRef = useRef(false);
+
+  function rememberScanId(nextScanId?: string) {
+    if (!nextScanId) return;
+    analyticsScanIdRef.current = nextScanId;
+    setAnalyticsScanId(nextScanId);
+  }
 
   useEffect(() => {
     try {
@@ -95,6 +103,12 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
       );
     }
   }, []);
+
+  useEffect(() => {
+    if (scanInitializedRef.current || !doctor.id) return;
+    scanInitializedRef.current = true;
+    void logAnalyticsEvent("scan");
+  }, [doctor.id]);
 
   useEffect(() => {
     if (!showThankYou) { setGoogleEnabled(false); return; }
@@ -156,7 +170,7 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
       setReviews(nextReviews);
       setRecentHooks(nextReviews.map((review)=>review.split(/\n+/)[0]?.trim()).filter(Boolean).slice(-5));
       const supabase=createClient();
-      if(supabase&&analyticsScanId)void supabase.functions.invoke("mark-scan",{body:{scan_id:analyticsScanId,event:"generated"}});
+      if(supabase&&analyticsScanIdRef.current)void supabase.functions.invoke("mark-scan",{body:{scan_id:analyticsScanIdRef.current,event:"generated"}});
       advance(5);
     } catch(requestError) {
       console.error("generate-review request failed; using local fallback",requestError);
@@ -169,18 +183,18 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
     }
   }
 
-  async function logAnalyticsEvent(eventType: "copy" | "click_maps") {
+  async function logAnalyticsEvent(eventType: "scan" | "copy" | "click_maps") {
     try {
       const response = await fetch("/api/analytics/event", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ doctor_id: doctor.id, scan_id: analyticsScanId, event_type: eventType }),
+        body: JSON.stringify({ doctor_id: doctor.id, scan_id: analyticsScanIdRef.current, event_type: eventType }),
         keepalive: eventType === "click_maps",
       });
       if (!response.ok) console.error("Analytics event returned non-ok status", { eventType, status: response.status, statusText: response.statusText, body: await response.text() });
       else {
         const result = await response.json() as { scan_id?: string };
-        if (result.scan_id) setAnalyticsScanId(result.scan_id);
+        rememberScanId(result.scan_id);
         window.dispatchEvent(new CustomEvent("medirank:analytics-event", { detail: { eventType } }));
         localStorage.setItem("medirank_analytics_pulse", `${Date.now()}:${eventType}`);
       }
@@ -191,9 +205,10 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
 
   async function copyReview(review: string) {
     try {
-      await Promise.all([navigator.clipboard.writeText(review), logAnalyticsEvent("copy")]);
+      await navigator.clipboard.writeText(review);
+      void logAnalyticsEvent("copy");
       const supabase = createClient();
-      if (supabase && analyticsScanId) void supabase.functions.invoke("mark-scan", { body: { scan_id: analyticsScanId, event: "copied" } });
+      if (supabase && analyticsScanIdRef.current) void supabase.functions.invoke("mark-scan", { body: { scan_id: analyticsScanIdRef.current, event: "copied" } });
       setCurrentStep(7);
       setShowThankYou(true);
     } catch { console.error(t.copyError); }
@@ -203,7 +218,7 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
     if (!googleEnabled) return;
     void logAnalyticsEvent("click_maps");
     const supabase = createClient();
-    if (supabase && analyticsScanId) void supabase.functions.invoke("mark-scan", { body: { scan_id: analyticsScanId, event: "posted" } });
+    if (supabase && analyticsScanIdRef.current) void supabase.functions.invoke("mark-scan", { body: { scan_id: analyticsScanIdRef.current, event: "posted" } });
   }
 
   const Bubble = ({ children, orange = false }: { children: React.ReactNode; orange?: boolean }) => <div className={`absolute -top-14 left-4 z-10 max-w-[calc(100%-2rem)] rounded-2xl px-4 py-3 text-sm font-extrabold text-white shadow-xl ${orange ? "bg-[#F37021]" : "bg-[#0A4C95]"}`}><span className={`absolute -bottom-2 left-7 h-4 w-4 rotate-45 ${orange ? "bg-[#F37021]" : "bg-[#0A4C95]"}`} /> <span className="relative">{children}</span></div>;
