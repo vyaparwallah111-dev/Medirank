@@ -19,13 +19,26 @@ const localFallbackReviews: Record<Language, string[]> = {
     "I had a good experience during my visit.\nThe clinic staff handled things smoothly, and the doctor answered my concerns.\nOverall it felt simple and reassuring.",
     "The appointment was comfortable and well managed.\nThe dentist was patient while explaining the treatment.\nI left feeling satisfied with the visit.",
     "My visit to the clinic was positive.\nThe team was helpful, the place felt clean, and the doctor guided me properly.\nWould recommend for a calm dental visit.",
+    "Sharing my genuine review after the appointment.\nThe doctor explained things properly and the staff was courteous.\nThere was a short wait, but overall it was good.",
+    "I visited with a few doubts in mind.\nThe dentist listened patiently and answered them clearly.\nThe clinic experience felt calm and professional.",
+    "Highly satisfied with the way the visit was handled.\nThe staff helped with the basic process and the doctor was easy to talk to.\nOverall, a positive experience.",
+    "The clinic felt clean and organised.\nThe medical team was polite, and the doctor guided me properly.\nParking was a bit full, but the visit itself was good.",
   ],
   hinglish: [
     "Clinic visit ka experience kaafi acha raha.\nStaff helpful tha aur dr ne baat clearly samjhai.\nOverall mujhe comfortable feel hua.",
     "Mera treatment visit smooth raha.\nThe dentist ne calmly guide kiya, zyada rush jaisa feel nahi hua.\nClinic ka environment bhi neat tha.",
     "Aaj ka visit genuinely theek laga.\nStaff ne process simple rakha aur doctor se baat karke confidence aaya.\nMain overall satisfied hoon.",
     "Clinic mein experience acha tha.\nDoctor aur team ne concerns dhyan se sune, bas normal sa friendly vibe tha.\nFollow-up ke liye bhi clear guidance mili.",
+    "Maine recently visit kiya tha.\nReception par thoda wait hua, but doctor ka explanation clear tha.\nOverall acha experience raha.",
+    "Bahut simple aur comfortable visit tha.\nStaff polite tha aur dr ne jaldi-jaldi nahi kiya.\nMujhe treatment process samajh aa gaya.",
+    "First time aaya tha, thoda nervous tha.\nClinic team ne calmly handle kiya aur doubts clear kiye.\nExperience positive raha.",
+    "Genuine review share kar raha hoon.\nDoctor ka behaviour good tha aur clinic clean lagi.\nBas parking thodi busy thi, baaki sab theek.",
   ],
+};
+const pickFallbackReviews = (language: Language) => {
+  const source = localFallbackReviews[language];
+  const offset = Math.floor(Math.random() * source.length);
+  return Array.from({ length: 4 }, (_, index) => source[(offset + index) % source.length]);
 };
 const copy = {
   english: {
@@ -55,6 +68,8 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
   const [selectedServices, setSelectedServices] = useState<string[]>([]);
   const [customNotes, setCustomNotes] = useState("");
   const [reviews, setReviews] = useState<string[]>([]);
+  const [reviewRating, setReviewRating] = useState(5);
+  const [recentHooks, setRecentHooks] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [validationError, setValidationError] = useState("");
   const [deviceToken, setDeviceToken] = useState("");
@@ -114,7 +129,8 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
     setLoading(true);
     const token=deviceToken||crypto.randomUUID();
     if(!deviceToken)setDeviceToken(token);
-    const fallback=localFallbackReviews[currentLanguage];
+    const fallback=pickFallbackReviews(currentLanguage);
+    const fallbackRating=Math.random()<0.15?4:5;
     try {
       const supabaseUrl=process.env.NEXT_PUBLIC_SUPABASE_URL;
       const anonKey=process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -124,7 +140,7 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
       const response=await fetch(`${supabaseUrl.replace(/\/$/,"")}/functions/v1/generate-review`,{
         method:"POST",
         headers:{"Content-Type":"application/json",apikey:anonKey,Authorization:`Bearer ${anonKey}`},
-        body:JSON.stringify({doctor_id:doctor.id,selected_keywords:selectedExperiences,selected_treatments:selectedServices,selected_treatment_keyword:selectedServices[0]||null,rating:5,custom_notes:customNotes.trim()||null,language:currentLanguage,device_token:token,...(patientLocation||{})}),
+        body:JSON.stringify({doctor_id:doctor.id,selected_keywords:selectedExperiences,selected_treatments:selectedServices,selected_treatment_keyword:selectedServices[0]||null,rating:5,custom_notes:customNotes.trim()||null,language:currentLanguage,device_token:token,last_hooks:recentHooks,...(patientLocation||{})}),
         signal:controller.signal,
       }).finally(()=>window.clearTimeout(timeout));
       const responseText=await response.text();
@@ -132,14 +148,20 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
       let data:Record<string,unknown>={};
       try{data=responseText?JSON.parse(responseText) as Record<string,unknown>:{};}catch(parseError){console.error("generate-review invalid JSON response",{status:response.status,statusText:response.statusText,body:responseText,parseError});}
       const returned=Array.isArray(data.reviews)?data.reviews.filter((review:unknown):review is string=>typeof review==="string"&&review.trim().length>0).map(review=>review.trim()).slice(0,5):[];
-      if(!response.ok||returned.length<2){setReviews(fallback);}
-      else setReviews(returned);
+      const quality=data.quality&&typeof data.quality==="object"?data.quality as Record<string, unknown>:{};
+      const nextRating=quality.generated_rating===4?4:quality.generated_rating===5?5:fallbackRating;
+      const nextReviews=!response.ok||returned.length<2?fallback:returned.slice(0,4);
+      setReviewRating(nextRating);
+      setReviews(nextReviews);
+      setRecentHooks(nextReviews.map((review)=>review.split(/\n+/)[0]?.trim()).filter(Boolean).slice(-5));
       const supabase=createClient();
       if(supabase&&scanId)void supabase.functions.invoke("mark-scan",{body:{scan_id:scanId,event:"generated"}});
       advance(5);
     } catch(requestError) {
       console.error("generate-review request failed; using local fallback",requestError);
+      setReviewRating(fallbackRating);
       setReviews(fallback);
+      setRecentHooks(fallback.map((review)=>review.split(/\n+/)[0]?.trim()).filter(Boolean).slice(-5));
       advance(5);
     } finally {
       setLoading(false);
@@ -201,7 +223,7 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
 
       <section ref={(node) => { stepRefs.current[4] = node; }} className={levelClass(4)}><Bubble orange>{t.generateBubble}</Bubble><h2 className="text-xl font-black">{t.generateTitle}</h2><button type="button" onClick={generate} disabled={loading} className="mt-5 flex min-h-14 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-5 font-black text-white shadow-[0_0_24px_rgba(10,76,149,.45)] disabled:opacity-40">{loading ? <><Loader2 size={20} className="animate-spin" />{t.generating}</> : <><Sparkles size={20} />{t.generate}</>}</button></section>
 
-      <section ref={(node) => { stepRefs.current[5] = node; }} className={levelClass(5)}><Bubble>{t.draftsBubble}</Bubble><h2 className="text-xl font-black">{t.draftsTitle}</h2><div className="mt-4 space-y-4">{reviews.map((review, index) => <article key={index} className="rounded-2xl border-2 border-slate-200 p-4"><div className="flex gap-1 text-[#F37021]">{Array.from({ length: 5 }).map((_, star) => <Star key={star} fill="currentColor" size={14} />)}</div><p className="mt-3 whitespace-pre-line text-base font-semibold leading-7">{review}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-4 font-black text-white"><Clipboard size={18} />{t.copyReview}</button></article>)}</div></section>
+      <section ref={(node) => { stepRefs.current[5] = node; }} className={levelClass(5)}><Bubble>{t.draftsBubble}</Bubble><h2 className="text-xl font-black">{t.draftsTitle}</h2><div className="mt-4 space-y-4">{reviews.map((review, index) => <article key={index} className="rounded-2xl border-2 border-slate-200 p-4"><div className="flex gap-1 text-[#F37021]">{Array.from({ length: 5 }).map((_, star) => <Star key={star} fill={star < reviewRating ? "currentColor" : "none"} size={14} />)}</div><p className="mt-3 whitespace-pre-line text-base font-semibold leading-7">{review}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-4 font-black text-white"><Clipboard size={18} />{t.copyReview}</button></article>)}</div></section>
     </div>
     <BrandFooter />
 

@@ -4,6 +4,7 @@ import { updateProfile } from '../actions';
 import { ThemePicker } from '@/components/theme-picker';
 import { KnowledgeBaseSettings } from '@/components/knowledge-base-settings';
 import { ClinicLogoUpload } from '@/components/clinic-logo-upload';
+import { AIKnowledgeBaseSettings } from '@/components/ai-knowledge-base-settings';
 
 const defaultTheme={primary:'#1E40AF',accent:'#F97316',background:'#F8FAFC'};
 export default async function Profile({searchParams}:{searchParams:{saved?:string}}){
@@ -21,5 +22,6 @@ export default async function Profile({searchParams}:{searchParams:{saved?:strin
       <div className="sm:col-span-2"><label className="label">Google review link</label><input name="gmb_review_link" type="url" className="input" defaultValue={doctor.gmb_review_link||''}/></div>
       <div className="sm:col-span-2"><label className="label">Clinic logo</label><ClinicLogoUpload currentLogoUrl={doctor.logo_url}/></div>
     </div><KnowledgeBaseSettings initial={knowledge} specialization={doctor.specialization||''}/><ThemePicker initial={doctor.theme_config||defaultTheme}/><button className="btn-primary mt-6 w-full sm:w-auto">Save profile settings</button></form>
+    <AIKnowledgeBaseSettings doctorId={doctor.id}/>
   </div>;
 }
