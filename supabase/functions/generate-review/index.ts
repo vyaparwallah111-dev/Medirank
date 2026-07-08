@@ -10,7 +10,7 @@ const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status
 type KB={area_name?:unknown;city_name?:unknown;top_services?:unknown};
 const text=(value:unknown,fallback='')=>typeof value==='string'&&value.trim()?value.trim():fallback;
 const list=(value:unknown)=>Array.isArray(value)?value.filter((item):item is string=>typeof item==='string'&&!!item.trim()).map(item=>item.trim()):[];
-const GEMINI_MODEL='gemini-2.5-flash';
+const GEMINI_MODEL='gemini-3.1-flash-lite';
 const GEMINI_TIMEOUT_MS=7_000;
 type UsageType='doctor_name'|'clinic_name'|'area_name'|'treatment'|'superlative';
 type DensityBand='short'|'medium'|'long';
@@ -29,10 +29,10 @@ const openingHooks=[
 ];
 const selectDensity=():DensityBand=>{const roll=Math.random();return roll<.35?'short':roll<.8?'medium':'long'};
 const densityInstruction=(band:DensityBand)=>band==='short'
-  ? 'SHORT DRAFTS: each review must be max 3 distinct lines. Keep it direct, punchy, colloquial, and concise.'
+  ? 'SHORT DRAFTS: each review must be 4 distinct natural lines. Keep it direct, punchy, colloquial, and concise.'
   : band==='medium'
     ? 'MEDIUM DRAFTS: each review must be 5 to 6 distinct lines. Include doctor behavior and staff hospitality where supported.'
-    : 'LONG DRAFTS: each review must be 7 to 8 distinct lines. Use descriptive storytelling with a natural personal touch.';
+    : 'LONG DRAFTS: each review must be 6 to 7 distinct lines. Use descriptive storytelling with a natural personal touch.';
 const normalize=(value:string)=>value.toLowerCase().replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim();
 const opening=(value:string)=>normalize(value).split(' ').slice(0,4).join(' ');
 const jsonList=(value:unknown):string[]=>{
@@ -84,6 +84,28 @@ const includesAnyPhrase=(content:string,phrases:string[])=>{
   const normalized=normalize(content);
   return phrases.some(phrase=>phrase&&normalized.includes(normalize(phrase)));
 };
+function fewShotDatasetTrainingEngine(rating:number,clinicName:string,primaryArea:string,locality:string,selectedChip:string){
+  const starBand=rating>=5?'5 STARS - full satisfaction':rating===4?'4 STARS - good but real':'1-3 STARS - constructive/lower metric';
+  return `FEW-SHOT DATASET TRAINING ENGINE:
+Selected star archetype: ${starBand}. Match the user's ${rating}/5 rating honestly; never upgrade or soften it beyond the selected metric.
+Training examples are style anchors only, not text to copy:
+5 STARS: "Phulwari Sharif me isse acha doctor nahi milega. Bright Smile Dental Clinic me root canal karwaya, dr sahab bahut calmly handle karte hain."
+5 STARS: "Clean clinic and very expert dental team in Patna. Seamless treatment!"
+4 STARS: "Treatment was perfect but waiting lounge was a bit busy. Overall very happy with the teeth whitening here."
+1-3 STARS: "The doctor is friendly, but the waiting time was longer than scheduled. Treatment felt a bit rushed."
+Learn from the examples: localized grammar, imperfect human cadence, safe micro-critiques, and mixed English/Hinglish patterns. Do not repeat their exact wording unless it is a supplied target field.
+Seed matrix from request/database:
+- clinic_name: ${clinicName||'not supplied'}
+- primary_area: ${primaryArea||'not supplied'}
+- locality: ${locality||'not supplied'}
+- selected_chip: ${selectedChip||'not supplied'}
+Cognitive rotation:
+Draft 1 focuses on clinic_name + selected_chip.
+Draft 2 focuses on locality/primary_area + doctor behavior.
+Draft 3 is a short Hinglish-style recommendation or warning matching the star rating.
+Draft 4 focuses on the procedure/visit journey.
+Never cram every seed into one draft. If a seed sounds artificial for the star context, semantically replace it with a local synonym such as "tooth work" instead of "root canal".`;
+}
 
 function semanticExpansionInstruction(priorityKeywords:string[],selectedSpecificTreatment:string,language:string,includeAmbientCritique:boolean){
   const seedList=priorityKeywords.length?priorityKeywords.join(', '):'none';
@@ -219,16 +241,20 @@ function emergencyDrafts(language:'english'|'hinglish'){
   const offset=Math.floor(Math.random()*repository.length);
   return Array.from({length:4},(_,index)=>repository[(offset+index)%repository.length]);
 }
-function ensureLineShape(content:string,language:'english'|'hinglish',band:DensityBand){
+function ensureLineShape(content:string,language:'english'|'hinglish',band:DensityBand,rating=5){
   const lines=content.split(/\n+/).map(line=>line.trim()).filter(Boolean);
-  const maxLines=band==='short'?3:band==='medium'?6:8;
-  const minLines=band==='short'?1:band==='medium'?5:7;
+  const maxLines=band==='short'?4:band==='medium'?6:7;
+  const minLines=band==='short'?4:band==='medium'?5:6;
   if(lines.length>=minLines)return lines.slice(0,maxLines).join('\n');
   const sentenceLines=content.split(/(?<=[.!?])\s+/).map(line=>line.trim()).filter(Boolean);
   const next=[...(sentenceLines.length>1?sentenceLines:lines)];
-  const fillers=language==='hinglish'
-    ? ['Overall visit positive laga.','Main experience se satisfied hoon.','Process simple tha.','Staff ka response helpful tha.','Doctor ne calmly explain kiya.','Bas overall acha laga.']
-    : ['Overall, my visit felt positive.','I felt satisfied with the experience.','The process felt simple.','The staff response was helpful.','The dentist explained things calmly.','Overall, it was a good visit.'];
+  const fillers=rating<=3
+    ? (language==='hinglish'
+      ? ['Experience mixed raha.','Waiting time better ho sakta tha.','Explanation thodi aur clear ho sakti thi.','Overall improvement ki zarurat lagi.','Doctor friendly the, but process rushed laga.']
+      : ['The experience felt mixed.','The waiting time could be better.','The explanation could have been clearer.','Overall, there is room to improve.','The doctor was friendly, but the process felt a bit rushed.'])
+    : language==='hinglish'
+      ? ['Overall visit positive laga.','Main experience se satisfied hoon.','Process simple tha.','Staff ka response helpful tha.','Doctor ne calmly explain kiya.','Bas overall acha laga.']
+      : ['Overall, my visit felt positive.','I felt satisfied with the experience.','The process felt simple.','The staff response was helpful.','The dentist explained things calmly.','Overall, it was a good visit.'];
   for(const filler of fillers){if(next.length>=minLines)break;if(!next.some(line=>normalize(line)===normalize(filler)))next.push(filler)}
   return next.slice(0,maxLines).join('\n');
 }
@@ -277,6 +303,9 @@ Deno.serve(async(req)=>{
     const providerTerm=specialtyLower.includes('dent')?'the dentist':specialtyLower.includes('physician')||specialtyLower.includes('medicine')?'the physician':'the specialist';
     const services=list(kb.top_services);
     const selectedChip=text(body.selected_chip).slice(0,80);
+    const payloadClinicName=text(body.clinic_name,text(doctor.clinic_name)).slice(0,120);
+    const payloadPrimaryArea=text(body.primary_area).slice(0,120);
+    const payloadLocality=text(body.locality).slice(0,120);
     const legacyTreatment=text(body.selected_treatment_keyword);
     const requested=[...list(body.selected_treatments),...list(body.selected_services)];
     if(legacyTreatment)requested.unshift(legacyTreatment);
@@ -316,13 +345,15 @@ Deno.serve(async(req)=>{
     const aiPrimaryArea=jsonList(areaSource.primary??areaSource.Primary)[0]||'';
     const aiSecondaryArea=jsonList(areaSource.secondary??areaSource.Secondary)[0]||'';
     const clinicLocality=aiPrimaryArea||aiSecondaryArea||[area,city].filter(value=>value&&value!=='the local area').join(', ')||area;
-    const primaryArea=aiPrimaryArea||area;
+    const primaryArea=payloadPrimaryArea||aiPrimaryArea||area;
     const configuredTreatments=Array.from(new Set([...jsonList(aiSettings?.target_keywords),...services,...treatments].map(item=>item.trim()).filter(Boolean)));
     const selectedSpecificTreatment=treatments[0]||configuredTreatments[0]||selectedTreatment;
     const densityBand=selectDensity();
-    const generatedRating=rating>=5?5:4;
-    const includeAmbientCritique=generatedRating===4||Math.random()<.3;
-    const microComplaint=generatedRating===4
+    const generatedRating=rating;
+    const includeAmbientCritique=generatedRating<=4||Math.random()<.3;
+    const microComplaint=generatedRating<=3
+      ? (language.startsWith('Hinglish')?'Constructive lower-star tone rakhein: doctor behavior ka fair mention ho sakta hai, but wait, rushed feeling, explanation gap, ya process issue naturally include karein. No unsafe medical claims.':'Use a constructive lower-star tone: doctor behavior may be fair, but naturally include waiting time, rushed feeling, explanation gap, or process concern. No unsafe medical claims.')
+      : generatedRating===4
       ? (language.startsWith('Hinglish')?'Add one small non-medical micro-complaint, such as a little wait at reception or parking being full, while keeping the treatment and doctor sentiment positive.':'Add one small non-medical micro-complaint, such as a short reception wait or parking being full, while keeping the treatment and doctor sentiment positive.')
       : includeAmbientCritique
         ? (language.startsWith('Hinglish')?'Optionally add one tiny human observation in only one draft, like halka wait, crowd, parking issue, or mild temporary sensitivity, but keep the review clearly 5-star positive.':'Optionally add one tiny human observation in only one draft, such as a short wait, crowd, parking issue, or mild temporary sensitivity, while keeping the review clearly 5-star positive.')
@@ -371,7 +402,7 @@ Deno.serve(async(req)=>{
     }catch(error){console.error('Daily phrase-cap audit lookup threw; using defaults',error)}
     const usageCounts:Record<UsageType,number>={doctor_name:0,clinic_name:0,area_name:0,treatment:0,superlative:0};
     for(const row of usageRows||[]){const kind=row.usage_type as UsageType;if(kind in usageCounts)usageCounts[kind]++}
-    const targetLocality=clinicLocality&&clinicLocality!=='the local area'?clinicLocality:(city&&city!=='the local area'?city:area);
+    const targetLocality=payloadLocality||(clinicLocality&&clinicLocality!=='the local area'?clinicLocality:(city&&city!=='the local area'?city:area));
     const allowSpecificLocalityAndTreatment=generatedRowCount<4;
     const flags={
       include_doctor_name:includeIdentity,
@@ -381,13 +412,14 @@ Deno.serve(async(req)=>{
       include_superlative:usageCounts.superlative<3,
     };
     const requiredTargetAnchors=Array.from(new Set([
-      ...(flags.include_clinic_name?[text(doctor.clinic_name)]:[]),
+      ...(flags.include_clinic_name?[payloadClinicName]:[]),
       ...(flags.include_area_name?[targetLocality]:[]),
     ].map(item=>item.trim()).filter(Boolean)));
     const targetAnchorInstruction=requiredTargetAnchors.length
       ? `STRICT TARGET ANCHOR RULE: Every single generated review variant MUST naturally include at least one exact database target anchor from this list: ${requiredTargetAnchors.map(anchor=>`"${anchor}"`).join(' OR ')}. This rule applies to all ${targetCount} variants, not just one. Weave the anchor into normal patient language and do not keyword-stuff.`
       : 'STRICT TARGET ANCHOR RULE: No exact clinic/locality anchor is available, so keep wording generic and do not invent a locality.';
-    const databaseContext=databaseTargetContext(doctor,primaryArea,targetLocality,priorityKeywords);
+    const databaseContext=databaseTargetContext({...doctor,clinic_name:payloadClinicName},primaryArea,targetLocality,priorityKeywords);
+    const fewShotContext=fewShotDatasetTrainingEngine(generatedRating,payloadClinicName,primaryArea,targetLocality,selectedChip);
     let history:Array<{id:string;content:string;embedding:unknown}>=[];
     try{
       const result=await db.from('generated_reviews').select('id,content,embedding').eq('doctor_id',doctor.id).order('created_at',{ascending:false}).limit(10);
@@ -420,6 +452,7 @@ Deno.serve(async(req)=>{
 ${identityInstruction}
 ${localityInstruction}
 ${targetAnchorInstruction}
+${fewShotContext}
 Service category: ${specialty}. Refer to the care provider only as ${providerTerm} or "the clinical staff".
 Selected aspect: ${aspects.join(', ')||'good care'}. ${treatmentInstruction}
 Patient-facing rating tier for all four drafts: ${generatedRating}/5. ${microComplaint}
@@ -440,24 +473,24 @@ Never keyword-stuff. If a semantic seed does not fit naturally, omit it. It is b
 Add tiny human conversational imperfections sparingly: occasional casual casing such as "dr", light Hinglish typing like "acha", or one small grammar slip. Keep the text readable and sincere.
 
 STRUCTURAL VARIATION RULES FOR THE FOUR VARIANTS:
-1. Option 1: Use hook "${selectedHooks[0]}"; angle = casual first-person patient who felt reassured after concern or confusion.
-2. Option 2: Use hook "${selectedHooks[1]}"; angle = short, practical review focused on clarity, clinic flow, staff, and cleanliness.
-3. Option 3: Use hook "${selectedHooks[2]}"; angle = detailed treatment journey with a distinct chronology and one naturally expanded treatment phrase if permitted.
-4. Option 4: Use hook "${selectedHooks[3]}"; angle = ${language.startsWith('Hinglish')?'localized Hinglish story with mixed Hindi-English vocabulary; do not invent a name, student identity, friend recommendation, month, or long personal backstory unless the patient note supplies it.':'conversational English with a different sentence rhythm and perspective from the other three.'}
+1. JSON array item 1: Use hook "${selectedHooks[0]}"; rotate toward clinic_name + selected_chip.
+2. JSON array item 2: Use hook "${selectedHooks[1]}"; rotate toward locality/primary_area + doctor behavior.
+3. JSON array item 3: Use hook "${selectedHooks[2]}"; short Hinglish-style recommendation or constructive warning matching ${generatedRating}/5.
+4. JSON array item 4: Use hook "${selectedHooks[3]}"; procedure/visit journey with semantic treatment phrasing if permitted.
 Each option must have a different opening grammar, different sentence length pattern, and different emphasis. Do not recycle the same praise sequence in multiple drafts.
 
 CRITICAL OUTPUT RULES:
-Generate exactly ${targetCount} unique, distinct review variants separated by the tags [REVIEW] and [/REVIEW]. Each review must have line breaks matching the selected density. Reflect the ${generatedRating}/5 rating honestly. If a patient note exists, preserve its factual meaning without exaggeration. Wrap every variant strictly inside [REVIEW] and [/REVIEW].
+Output raw JSON only: an array of exactly ${targetCount} strings. No object wrapper. No markdown. No code fence. No corporate preamble such as "Here is your review". Each string must contain 4 to 7 newline-separated lines of natural cadence. Reflect the ${generatedRating}/5 rating honestly. If a patient note exists, preserve its factual meaning without exaggeration.
 Every variant must pass the strict target anchor rule by including ${requiredTargetAnchors.length?requiredTargetAnchors.map(anchor=>`"${anchor}"`).join(' or '):'the available database target context'} naturally in the review text.
 Write conversational Indian customer-style options. Do not keyword-stuff, manipulate ratings, or add unsupported claims.
-Do not include any introduction, JSON, markdown, or surrounding conversational phrases.`;
+Return only the JSON array.`;
     let reviews:string[]=[],reviewEmbeddings:Array<number[]|null>=[],similarities:number[]=[],generationAttempts=0;
     for(let attempt=1;attempt<=1;attempt++){
       generationAttempts=attempt;
       const retryDirection=attempt===1?'':`\nORIGINALITY RETRY ${attempt}: The previous draft was too close to prior reviews. Change syntax, cadence, perspective, sentence order, and vocabulary while preserving only supplied facts. Avoid these openings: ${recentOpenings.join(' | ')}.`;
       const attemptPrompt=prompt+retryDirection;
-      const systemContextParts=[databaseContext,targetAnchorInstruction,aiKnowledgeContext];
-      const geminiPayload={systemInstruction:{parts:systemContextParts.map(value=>({text:value}))},contents:[{parts:[...systemContextParts.map(value=>({text:value})),{text:attemptPrompt}]}],generationConfig:{temperature:Math.min(1,.78+attempt*.07),maxOutputTokens:2500}};
+      const systemContextParts=[databaseContext,targetAnchorInstruction,fewShotContext,aiKnowledgeContext];
+      const geminiPayload={systemInstruction:{parts:systemContextParts.map(value=>({text:value}))},contents:[{parts:[...systemContextParts.map(value=>({text:value})),{text:attemptPrompt}]}],generationConfig:{temperature:Math.min(1,.92+attempt*.04),topP:.96,topK:40,maxOutputTokens:1200,responseMimeType:'application/json'}};
       console.log('Gemini request',{model:GEMINI_MODEL,doctor_id:doctor.id,language,attempt,requestSequence,completedRequestCount,flags,densityBand,generatedRating,selectedHooks,usageCounts,priorityKeywords,requiredTargetAnchors});
       try{
         const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},GEMINI_TIMEOUT_MS);
@@ -483,7 +516,7 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
           void logSystemError(db,doctor.id,`Gemini missed required target anchors: ${requiredTargetAnchors.join(', ')}`);
           continue;
         }
-        const formatted=drafts.map(draft=>ensureLineShape(draft,fallbackLanguage,densityBand));
+        const formatted=drafts.map(draft=>ensureLineShape(draft,fallbackLanguage,densityBand,generatedRating));
         const maxSimilarities=formatted.map(()=>0);
         console.log('Originality check skipped for SLA',{doctor_id:doctor.id,attempt,historical_embedding_count:historicalEmbeddings.length});
         reviews=formatted;reviewEmbeddings=formatted.map(()=>null);similarities=maxSimilarities;break;
@@ -505,20 +538,34 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
       const fallbackAnchor=requiredTargetAnchors[0]||'';
       const hinglishAnchor=fallbackAnchor?`${fallbackAnchor} mein `:'';
       const englishAnchor=fallbackAnchor?`at ${fallbackAnchor} `:'';
-      const fallbackReviews=language.startsWith('Hinglish')
-        ? [
+      const fallbackReviews=generatedRating<=3
+        ? (language.startsWith('Hinglish')
+          ? [
+            `${hinglishAnchor}${includeIdentity?`${text(doctor.doctor_name)} ke saath `:'clinic '}experience mixed raha.${aspect?` ${aspect} theek tha, but overall flow better ho sakta tha.`:''}`,
+            `${hinglishAnchor}${treatment?`${treatment} ke liye `:''}visit mein doctor friendly the, but waiting time expected se zyada laga.`,
+            `${hinglishAnchor}clinic visit mein explanation thodi aur clear ho sakti thi. Process thoda rushed feel hua.`,
+            `${hinglishAnchor}staff ka response okay tha, lekin overall experience mein improvement ki zarurat lagi.${treatment?` Main ${treatment} ke liye aaya tha.`:''}`,
+          ]
+          : [
+            `My experience ${englishAnchor}felt mixed.${aspect?` ${aspect} was okay, but the overall flow could be better.`:''}`,
+            `My ${treatment?`${treatment} `:''}visit ${englishAnchor}had a longer wait than expected, though the doctor was friendly.`,
+            `The visit ${englishAnchor}could have used clearer explanation. The process felt a bit rushed.`,
+            `The staff response ${englishAnchor}was okay, but the overall experience needs some improvement.${treatment?` I visited for ${treatment}.`:''}`,
+          ])
+        : language.startsWith('Hinglish')
+          ? [
             `${hinglishAnchor}${includeIdentity?`${text(doctor.doctor_name)} ke saath `:'clinic '}visit achha raha.${aspect?` ${aspect} ka experience raha.`:''}`,
             `${hinglishAnchor}${treatment?`${treatment} ke liye `:''}visit ke dauran ${includeIdentity?text(doctor.doctor_name):'doctor'} aur staff ke saath experience comfortable raha.`,
             `${hinglishAnchor}clinic mein mera overall experience positive raha.${aspect?` Mujhe ${aspect} achha laga.`:''}`,
             `${hinglishAnchor}doctor aur clinic staff ke saath visit smooth raha.${treatment?` Main ${treatment} ke liye aaya tha.`:''}`,
           ]
-        : [
+          : [
             `I had a good experience ${englishAnchor}${includeIdentity?`with ${text(doctor.doctor_name)}`:'during my clinic visit'}.${aspect?` I appreciated ${aspect}.`:''}`,
             `My ${treatment?`${treatment} `:''}visit ${englishAnchor}with ${includeIdentity?text(doctor.doctor_name):'the doctor'} and staff felt comfortable.`,
             `My overall experience ${englishAnchor}was positive.${aspect?` ${aspect} stood out during my visit.`:''}`,
             `The visit ${englishAnchor}with the doctor and clinic staff went smoothly.${treatment?` I visited for ${treatment}.`:''}`,
           ];
-      reviews=Array.from(new Set([...reviews,...fallbackReviews,...emergencyDrafts(fallbackLanguage)].map(review=>ensureLineShape(review.trim(),fallbackLanguage,densityBand)).filter(Boolean))).slice(0,targetCount);
+      reviews=Array.from(new Set([...reviews,...fallbackReviews,...emergencyDrafts(fallbackLanguage)].map(review=>ensureLineShape(review.trim(),fallbackLanguage,densityBand,generatedRating)).filter(Boolean))).slice(0,targetCount);
       reviewEmbeddings=Array.from({length:reviews.length},()=>null);
       similarities=Array.from({length:reviews.length},()=>0);
       console.warn('Using policy-safe fallback reviews',{doctor_id:doctor.id,parsed_count:reviews.length,generationAttempts});
