@@ -178,6 +178,10 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
         keepalive: eventType === "click_maps",
       });
       if (!response.ok) console.error("Analytics event returned non-ok status", { eventType, status: response.status, statusText: response.statusText, body: await response.text() });
+      else {
+        window.dispatchEvent(new CustomEvent("medirank:analytics-event", { detail: { eventType } }));
+        localStorage.setItem("medirank_analytics_pulse", `${Date.now()}:${eventType}`);
+      }
     } catch (analyticsError) {
       console.error("Analytics event request failed", { eventType, analyticsError });
     }

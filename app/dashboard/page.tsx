@@ -9,7 +9,7 @@ export const revalidate = 0;
 
 type TrendPoint = { label: string; scans: number; posts: number };
 type DashboardEvent = { id: string; created_at: string; event_type: "scan" | "copy" | "click_maps" };
-type ScanRow = { id: string; created_at: string; review_copied: boolean | null; redirected_to_gmb: boolean | null };
+type TrendAggregate = { period: "daily" | "weekly"; bucket_start: string; scans: number | string; posts: number | string };
 
 function TrendChart({title,subtitle,points}:{title:string;subtitle:string;points:TrendPoint[]}) {
   const max=Math.max(1,...points.flatMap(point=>[point.scans,point.posts]));
@@ -17,50 +17,39 @@ function TrendChart({title,subtitle,points}:{title:string;subtitle:string;points
   return <div className="card p-5 sm:p-6"><h2 className="font-bold">{title}</h2><p className="mt-1 text-sm text-slate-500">{subtitle}</p><div className="mt-5 h-52 rounded-xl bg-slate-50 p-3"><svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full" aria-label={`${title}: scans and successful posts`} role="img"><polyline points={coordinates('scans')} fill="none" stroke="#93C5FD" strokeWidth="3" vectorEffect="non-scaling-stroke"/><polyline points={coordinates('posts')} fill="none" stroke="#1E40AF" strokeWidth="3" vectorEffect="non-scaling-stroke"/></svg></div><div className="mt-3 flex flex-wrap justify-between gap-2 text-[11px] font-semibold text-slate-400">{points.map((point,index)=><span key={`${point.label}-${index}`}>{point.label}</span>)}</div><div className="mt-4 flex gap-5 text-xs font-semibold"><span className="flex items-center gap-2"><i className="h-2.5 w-2.5 rounded-full bg-blue-300"/>Scans</span><span className="flex items-center gap-2"><i className="h-2.5 w-2.5 rounded-full bg-brand"/>Successful posts</span></div></div>;
 }
 
-function dailyTrends(rows:{created_at:string;event_type:string}[],days=14):TrendPoint[]{
-  return Array.from({length:days},(_,index)=>{const date=new Date();date.setHours(0,0,0,0);date.setDate(date.getDate()-(days-1-index));const next=new Date(date);next.setDate(next.getDate()+1);const matches=rows.filter(row=>{const value=new Date(row.created_at);return value>=date&&value<next});return {label:date.toLocaleDateString('en-IN',{day:'numeric',month:'short'}),scans:matches.filter(row=>row.event_type==='scan').length,posts:matches.filter(row=>row.event_type==='click_maps').length}});
-}
-
-function weeklyTrends(rows:{created_at:string;event_type:string}[],weeks=8):TrendPoint[]{
-  return Array.from({length:weeks},(_,index)=>{const end=new Date();end.setHours(23,59,59,999);end.setDate(end.getDate()-((weeks-1-index)*7));const start=new Date(end);start.setHours(0,0,0,0);start.setDate(start.getDate()-6);const matches=rows.filter(row=>{const value=new Date(row.created_at);return value>=start&&value<=end});return {label:index===weeks-1?'This week':`${weeks-1-index}w`,scans:matches.filter(row=>row.event_type==='scan').length,posts:matches.filter(row=>row.event_type==='click_maps').length}});
-}
-
-function eventsFromScans(rows:ScanRow[]):DashboardEvent[]{
-  return rows.flatMap(row=>{
-    const events:DashboardEvent[]=[{id:`${row.id}-scan`,created_at:row.created_at,event_type:'scan'}];
-    if(row.review_copied)events.push({id:`${row.id}-copy`,created_at:row.created_at,event_type:'copy'});
-    if(row.redirected_to_gmb)events.push({id:`${row.id}-click_maps`,created_at:row.created_at,event_type:'click_maps'});
-    return events;
-  });
+function trendPoints(rows:TrendAggregate[],period:"daily"|"weekly"):TrendPoint[]{
+  const source=rows.filter(row=>row.period===period);
+  return source.map((row,index)=>({
+    label:period==="daily"
+      ? new Date(row.bucket_start).toLocaleDateString("en-IN",{day:"numeric",month:"short"})
+      : index===source.length-1 ? "This week" : `${source.length-1-index}w`,
+    scans:Number(row.scans)||0,
+    posts:Number(row.posts)||0,
+  }));
 }
 
 export default async function Dashboard() {
   const doctor = await getCurrentDoctor();
   const { supabase, user } = await getAuthenticatedUser();
-  const trendSince=new Date(Date.now()-56*24*60*60*1000).toISOString();
-  const [scansResult, copiedResult, postedResult, recentScansResult, trendScansResult, recentEventsResult, trendEventsResult] = await Promise.all([
-    supabase.from("scans").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id),
-    supabase.from("scans").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("review_copied", true),
-    supabase.from("scans").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("redirected_to_gmb", true),
-    supabase.from("scans").select("id,created_at,review_copied,redirected_to_gmb").eq("doctor_id", doctor.id).order("created_at", { ascending: false }).limit(20),
-    supabase.from("scans").select("id,created_at,review_copied,redirected_to_gmb").eq("doctor_id",doctor.id).gte("created_at",trendSince).order("created_at"),
+  const [scansResult, copiedResult, postedResult, recentEventsResult, trendResult] = await Promise.all([
+    supabase.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "scan"),
+    supabase.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "copy"),
+    supabase.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "click_maps"),
     supabase.from("analytics_events").select("id,created_at,event_type").eq("doctor_id", doctor.id).order("created_at", { ascending: false }).limit(20),
-    supabase.from("analytics_events").select("created_at,event_type").eq("doctor_id",doctor.id).gte("created_at",trendSince).order("created_at"),
+    supabase.rpc("get_dashboard_analytics_trends", { target_doctor_id: doctor.id, daily_days: 14, weekly_weeks: 8 }),
   ]);
   if (doctor.auth_user_id !== user.id) throw new Error("Forbidden");
-  const scanError=scansResult.error||copiedResult.error||postedResult.error||recentScansResult.error||trendScansResult.error;
-  if(scanError)throw new Error(`Unable to load dashboard analytics: ${scanError.message}`);
+  const analyticsError=scansResult.error||copiedResult.error||postedResult.error||recentEventsResult.error||trendResult.error;
+  if(analyticsError)throw new Error(`Unable to load dashboard analytics: ${analyticsError.message}`);
 
   const scans = scansResult.count ?? 0;
   const copied = copiedResult.count ?? 0;
   const posted = postedResult.count ?? 0;
   const conversion = scans ? (posted / scans) * 100 : 0;
-  const fallbackRecent=eventsFromScans((recentScansResult.data??[]) as ScanRow[]).sort((a,b)=>new Date(b.created_at).getTime()-new Date(a.created_at).getTime()).slice(0,6);
-  const analyticsRecent=(recentEventsResult.error?[]:recentEventsResult.data??[]) as DashboardEvent[];
-  const recent = (analyticsRecent.length?analyticsRecent:fallbackRecent).slice(0,6);
-  const fallbackTrendRows=eventsFromScans((trendScansResult.data??[]) as ScanRow[]);
-  const analyticsTrendRows=(trendEventsResult.error?[]:trendEventsResult.data??[]) as DashboardEvent[];
-  const trendRows=analyticsTrendRows.length?analyticsTrendRows:fallbackTrendRows;
+  const recent = ((recentEventsResult.data??[]) as DashboardEvent[]).slice(0,6);
+  const trendRows=(trendResult.data??[]) as TrendAggregate[];
+  const dailyPoints=trendPoints(trendRows,"daily");
+  const weeklyPoints=trendPoints(trendRows,"weekly");
   const today = new Intl.DateTimeFormat("en-IN", { weekday: "long", day: "numeric", month: "long" }).format(new Date()).toUpperCase();
   const isStarter = (doctor.subscription_tier?.trim().toLowerCase() || "starter") === "starter";
   const isGrowth = doctor.subscription_tier?.trim().toLowerCase() === "growth";
@@ -89,7 +78,7 @@ export default async function Dashboard() {
       <DashboardAutoRefresh />
       {heading}
       <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{stats.map(([Icon, label, value]) => <div className="card p-5 transition-shadow duration-300 hover:shadow-md" key={label}><span className="grid h-10 w-10 place-items-center rounded-xl bg-blue-50 text-brand"><Icon size={20}/></span><p className="mt-5 min-h-9 text-3xl font-extrabold tabular-nums">{value}</p><p className="mt-1 text-sm text-slate-500">{label}</p></div>)}</div>
-      <div className="mt-5 grid gap-5 xl:grid-cols-2"><TrendChart title="Daily trend" subtitle="Last 14 days" points={dailyTrends(trendRows)}/><TrendChart title="Weekly trend" subtitle="Last 8 weeks" points={weeklyTrends(trendRows)}/></div>
+      <div className="mt-5 grid gap-5 xl:grid-cols-2"><TrendChart title="Daily trend" subtitle="Last 14 days" points={dailyPoints}/><TrendChart title="Weekly trend" subtitle="Last 8 weeks" points={weeklyPoints}/></div>
       <div className="mt-5 grid gap-5 xl:grid-cols-[1.45fr_.55fr]">
         <div className="card p-6"><h2 className="font-bold">Review recovery quick action</h2><p className="mt-2 text-sm leading-6 text-slate-500">Copy a ready-to-send WhatsApp message with your clinic's direct review link and share it with past patients.</p>{isGrowth?<DirectLinkShare clinic={doctor.clinic_name} slug={doctor.slug} appOrigin={process.env.NEXT_PUBLIC_APP_URL||''}/>:<Link href="/pricing" className="btn-secondary mt-4 w-full">Unlock with Growth</Link>}</div>
         <div className="card p-6"><h2 className="font-bold">Your review QR</h2><p className="text-sm text-slate-500">Ready for your reception desk</p><div className="mx-auto mt-5 grid aspect-square max-w-32 place-items-center rounded-2xl border bg-white p-3"><QrCode className="h-full w-full text-slate-950" strokeWidth={1.2}/></div><Link href="/dashboard/qr-code" className="btn-secondary mt-5 w-full">View & download <ArrowUpRight size={16}/></Link></div>

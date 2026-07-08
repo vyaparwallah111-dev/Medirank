@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { Brain, CheckCircle2, Loader2, MapPin, Plus, Save, Sparkles, X } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+import { updateAISettings } from '@/app/dashboard/actions';
 
 type Priority = 'high' | 'medium' | 'low';
 type Tone = 'Formal' | 'Casual' | 'Mixed';
@@ -118,15 +119,16 @@ export function AIKnowledgeBaseSettings({ doctorId }: { doctorId: string }) {
       patient_concerns: settings.patient_concerns,
       usp_points: settings.usp_points,
       tone_preference: settings.tone_preference,
-      updated_at: new Date().toISOString(),
     };
-    const { error } = await supabase.from('doctor_ai_settings').upsert(payload, { onConflict: 'doctor_id' });
-    setSaving(false);
-    if (error) {
-      console.error('AI settings save failed:', error.message);
+    try {
+      await updateAISettings(payload);
+    } catch (error) {
+      console.error('AI settings save failed:', error);
+      setSaving(false);
       setMessage({ type: 'error', text: 'Unable to save AI settings. Please try again.' });
       return;
     }
+    setSaving(false);
     setMessage({ type: 'success', text: 'AI Knowledge Base settings saved.' });
     window.setTimeout(() => setMessage(null), 3500);
   }
