@@ -10,6 +10,7 @@ type Language = "english" | "hinglish";
 type Theme = { primary?: string; accent?: string; background?: string };
 type Doctor = { id: string; doctor_name: string; clinic_name: string; specialization: string | null; gmb_review_link: string | null; logo_url?: string | null; theme_config?: Theme | null };
 type Location = { latitude: number; longitude: number };
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const ThankYouAnimation = dynamic(() => import("./thank-you-animation"), { ssr: false });
 const fallback = { primary: "#0A4C95", accent: "#F37021", background: "#F8FAFC" };
@@ -105,7 +106,7 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
   }, []);
 
   useEffect(() => {
-    if (scanInitializedRef.current || !doctor.id) return;
+    if (scanInitializedRef.current || !uuidPattern.test(doctor.id)) return;
     scanInitializedRef.current = true;
     void logAnalyticsEvent("scan");
   }, [doctor.id]);
@@ -184,6 +185,10 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
   }
 
   async function logAnalyticsEvent(eventType: "scan" | "copy" | "click_maps") {
+    if (!uuidPattern.test(doctor.id)) {
+      console.error("Analytics event skipped: invalid doctor id.", { doctorId: doctor.id, eventType });
+      return;
+    }
     try {
       const response = await fetch("/api/analytics/event", {
         method: "POST",

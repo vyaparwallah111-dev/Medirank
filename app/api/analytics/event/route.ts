@@ -3,7 +3,15 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
-const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const errorMessage = (error: unknown) => {
+  if (error instanceof Error) return error.message;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+};
 const validEvents = new Set(["scan", "copy", "click_maps"]);
 
 async function logAnalyticsError(endpoint: string, error: unknown, doctorId?: string) {
@@ -31,10 +39,13 @@ export async function POST(request: Request) {
     } catch {
       return NextResponse.json({ ok: false, error: "Invalid analytics payload." });
     }
-    doctorId = typeof body?.doctor_id === "string" ? body.doctor_id : "";
+    doctorId = typeof body?.doctor_id === "string" ? body.doctor_id.trim() : "";
     let scanId = typeof body?.scan_id === "string" ? body.scan_id : "";
     const eventType = typeof body?.event_type === "string" && validEvents.has(body.event_type) ? body.event_type : null;
-    if (!doctorId || !eventType) return NextResponse.json({ ok: false, error: "Invalid analytics event." });
+    if (!doctorId || doctorId === "null" || doctorId === "undefined" || !uuidPattern.test(doctorId)) {
+      return NextResponse.json({ ok: false, error: "Invalid doctor_id." }, { status: 400 });
+    }
+    if (!eventType) return NextResponse.json({ ok: false, error: "Invalid analytics event." }, { status: 400 });
 
     const admin = createAdminClient();
     if (!admin) return NextResponse.json({ ok: false, error: "Analytics is unavailable." });
