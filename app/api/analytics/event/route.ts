@@ -30,6 +30,17 @@ async function logAnalyticsError(endpoint: string, error: unknown, doctorId?: st
   }
 }
 
+async function writeAnalyticsEvent(admin: ReturnType<typeof createAdminClient>, doctorId: string, eventType: string, scanId: string | null) {
+  if (!admin) throw new Error("Analytics is unavailable.");
+  if (scanId) {
+    return admin.from("analytics_events").upsert(
+      { doctor_id: doctorId, scan_id: scanId, event_type: eventType },
+      { onConflict: "scan_id,event_type" },
+    );
+  }
+  return admin.from("analytics_events").insert({ doctor_id: doctorId, event_type: eventType });
+}
+
 export async function POST(request: Request) {
   let doctorId = "";
   try {
@@ -40,7 +51,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "Invalid analytics payload." });
     }
     doctorId = typeof body?.doctor_id === "string" ? body.doctor_id.trim() : "";
-    let scanId = typeof body?.scan_id === "string" ? body.scan_id : "";
+    let scanId = typeof body?.scan_id === "string" && uuidPattern.test(body.scan_id.trim()) ? body.scan_id.trim() : "";
     const eventType = typeof body?.event_type === "string" && validEvents.has(body.event_type) ? body.event_type : null;
     if (!doctorId || doctorId === "null" || doctorId === "undefined" || !uuidPattern.test(doctorId)) {
       return NextResponse.json({ ok: false, error: "Invalid doctor_id." }, { status: 400 });
@@ -61,31 +72,28 @@ export async function POST(request: Request) {
     }
 
     if (!scanId) {
-      const { data: scan, error: scanCreateError } = await admin.from("scans").insert({ doctor_id: doctorId, user_agent: "web" }).select("id").single();
-      if (scanCreateError) throw scanCreateError;
-      scanId = scan.id;
+      const { data: scan, error: scanCreateError } = await admin.from("scans").insert({ doctor_id: doctorId }).select("id").single();
+      if (scanCreateError) {
+        await logAnalyticsError("api/analytics/event.scan_create", scanCreateError, doctorId);
+      } else {
+        scanId = scan.id;
+      }
     }
 
-    if (eventType !== "scan") {
+    if (scanId && eventType !== "scan") {
       const scanFlag = eventType === "copy" ? { review_copied: true } : { redirected_to_gmb: true };
       const { error: scanUpdateError } = await admin.from("scans").update(scanFlag).eq("id", scanId).eq("doctor_id", doctorId);
       if (scanUpdateError) throw scanUpdateError;
     }
 
-    const { error: scanEventError } = await admin.from("analytics_events").upsert(
-      { doctor_id: doctorId, scan_id: scanId, event_type: "scan" },
-      { onConflict: "scan_id,event_type" },
-    );
+    const { error: scanEventError } = await writeAnalyticsEvent(admin, doctorId, "scan", scanId || null);
     if (scanEventError) throw scanEventError;
 
     if (eventType !== "scan") {
-      const { error: eventError } = await admin.from("analytics_events").upsert(
-        { doctor_id: doctorId, scan_id: scanId, event_type: eventType },
-        { onConflict: "scan_id,event_type" },
-      );
+      const { error: eventError } = await writeAnalyticsEvent(admin, doctorId, eventType, scanId || null);
       if (eventError) throw eventError;
     }
-    return NextResponse.json({ ok: true, scan_id: scanId });
+    return NextResponse.json({ ok: true, scan_id: scanId || null });
   } catch (error) {
     await logAnalyticsError("api/analytics/event", error, doctorId);
     return NextResponse.json({ ok: false, error: "Unable to record analytics event." });

@@ -77,8 +77,10 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
   const [patientLocation, setPatientLocation] = useState<Location | null>(null);
   const [showThankYou, setShowThankYou] = useState(false);
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [analyticsDoctorId, setAnalyticsDoctorId] = useState('');
   const [analyticsScanId, setAnalyticsScanId] = useState(scanId);
   const stepRefs = useRef<Array<HTMLElement | null>>([]);
+  const analyticsDoctorIdRef = useRef('');
   const analyticsScanIdRef = useRef<string | null>(scanId);
   const scanInitializedRef = useRef(false);
 
@@ -106,10 +108,16 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
   }, []);
 
   useEffect(() => {
-    if (scanInitializedRef.current || !uuidPattern.test(doctor.id)) return;
+    const nextDoctorId=uuidPattern.test(doctor.id)?doctor.id:'';
+    analyticsDoctorIdRef.current=nextDoctorId;
+    setAnalyticsDoctorId(nextDoctorId);
+  }, [doctor.id]);
+
+  useEffect(() => {
+    if (scanInitializedRef.current || !analyticsDoctorId) return;
     scanInitializedRef.current = true;
     void logAnalyticsEvent("scan");
-  }, [doctor.id]);
+  }, [analyticsDoctorId]);
 
   useEffect(() => {
     if (!showThankYou) { setGoogleEnabled(false); return; }
@@ -185,7 +193,8 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
   }
 
   async function logAnalyticsEvent(eventType: "scan" | "copy" | "click_maps") {
-    if (!uuidPattern.test(doctor.id)) {
+    const doctorId=analyticsDoctorIdRef.current;
+    if (!uuidPattern.test(doctorId)) {
       console.error("Analytics event skipped: invalid doctor id.", { doctorId: doctor.id, eventType });
       return;
     }
@@ -193,7 +202,7 @@ export function ReviewExperience({ doctor, experienceKeywords, topServices, scan
       const response = await fetch("/api/analytics/event", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ doctor_id: doctor.id, scan_id: analyticsScanIdRef.current, event_type: eventType }),
+        body: JSON.stringify({ doctor_id: doctorId, scan_id: analyticsScanIdRef.current, event_type: eventType }),
         keepalive: eventType === "click_maps",
       });
       if (!response.ok) console.error("Analytics event returned non-ok status", { eventType, status: response.status, statusText: response.statusText, body: await response.text() });

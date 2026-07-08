@@ -483,7 +483,18 @@ Do not include any introduction, JSON, markdown, or surrounding conversational p
     const generatedAt=new Date().toISOString();
     try{const {error}=await db.from('review_generation_events').insert({doctor_id:doctor.id,fingerprint_hash:fingerprintHash,personality,location_verified:locationVerified,distance_meters:distanceMeters,created_at:generatedAt});if(error)console.error('Generation event audit insert failed; continuing',error)}
     catch(error){console.error('Generation event audit insert threw; continuing',error)}
-    try{const {error}=await db.from('device_fingerprints').upsert({doctor_id:doctor.id,fingerprint_hash:fingerprintHash,location_verified:locationVerified,distance_meters:distanceMeters,generated_at:generatedAt},{onConflict:'doctor_id,fingerprint_hash'});if(error)console.error('Device fingerprint audit upsert failed; continuing',error)}
+    try{
+      const fingerprintAudit={doctor_id:doctor.id,fingerprint_hash:fingerprintHash,location_verified:locationVerified,distance_meters:distanceMeters,generated_at:generatedAt};
+      const {error}=await db.from('device_fingerprints').upsert(fingerprintAudit,{onConflict:'doctor_id,fingerprint_hash'});
+      if(error?.code==='42P10'){
+        const update=await db.from('device_fingerprints').update({location_verified:locationVerified,distance_meters:distanceMeters,generated_at:generatedAt}).eq('doctor_id',doctor.id).eq('fingerprint_hash',fingerprintHash).select('id').maybeSingle();
+        if(update.error)console.error('Device fingerprint audit update fallback failed; continuing',update.error);
+        else if(!update.data){
+          const insert=await db.from('device_fingerprints').insert(fingerprintAudit);
+          if(insert.error)console.error('Device fingerprint audit insert fallback failed; continuing',insert.error);
+        }
+      }else if(error)console.error('Device fingerprint audit upsert failed; continuing',error)
+    }
     catch(error){console.error('Device fingerprint audit upsert threw; continuing',error)}
     return reply({reviews,target_count:targetCount,quality:{request_sequence_24h:requestSequence,flags,density_band:densityBand,generated_rating:generatedRating,selected_hooks:selectedHooks,generation_attempts:generationAttempts,personality,location_verified:locationVerified}});
   }catch(error){

@@ -41,7 +41,7 @@ export default async function PatientPage({params}:PageProps){
 
     const [keywordResult,scanResult]=await Promise.allSettled([
       supabase.from('doctor_keywords').select('keyword,category').eq('doctor_id',doctor.id).order('created_at'),
-      supabase.from('scans').insert({doctor_id:doctor.id,user_agent:'web'}).select('id').single(),
+      supabase.from('scans').insert({doctor_id:doctor.id}).select('id').single(),
     ]);
     const keywords=keywordResult.status==='fulfilled'?(keywordResult.value.data??[]):[];
     if(scanResult.status==='fulfilled'&&scanResult.value.error)console.error('Patient page scan session insert failed:',scanResult.value.error.message);

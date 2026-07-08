@@ -1,12 +1,14 @@
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
+
 import Link from "next/link";
+import { unstable_noStore as noStore } from "next/cache";
 import { ArrowUpRight, ClipboardCheck, LockKeyhole, QrCode, ScanLine, Send, Star } from "lucide-react";
 import { displayDoctorName, getAuthenticatedUser, getCurrentDoctor } from "@/lib/dashboard";
 import { DirectLinkShare } from "@/components/direct-link-share";
 import { DashboardAutoRefresh } from "@/components/dashboard-auto-refresh";
 import { createAdminClient } from "@/lib/supabase/admin";
-
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
 
 type TrendPoint = { label: string; scans: number; posts: number };
 type DashboardEvent = { id: string; created_at: string; event_type: "scan" | "copy" | "click_maps" };
@@ -70,6 +72,7 @@ async function syncAnalyticsEventsFromScans(doctorId:string){
 }
 
 export default async function Dashboard() {
+  noStore();
   const doctor = await getCurrentDoctor();
   const { supabase, user } = await getAuthenticatedUser();
   if (doctor.auth_user_id !== user.id) throw new Error("Forbidden");
