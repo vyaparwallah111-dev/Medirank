@@ -78,6 +78,16 @@ const copy = {
 } as const;
 
 const unique = (items: string[]) => Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+const sanitizeText = (value: string, maxLength: number) => value
+  .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, " ")
+  .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, " ")
+  .replace(/<[^>]*>/g, " ")
+  .replace(/\bon\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, " ")
+  .replace(/\b(?:javascript|data|vbscript):/gi, " ")
+  .replace(/[<>{}`\\]/g, " ")
+  .replace(/\s+/g, " ")
+  .trim()
+  .slice(0, maxLength);
 const titleCase = (value: string) => value.trim().split(/\s+/).map((part) => part ? `${part[0].toUpperCase()}${part.slice(1).toLowerCase()}` : "").join(" ");
 const pickFallbackReviews = (language: Language) => {
   const source = fallbackReviews[language];
@@ -214,7 +224,9 @@ export function ReviewExperience({
 
   function toggleChip(value: string) {
     setValidationError("");
-    setSelectedChips((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value].slice(0, 5));
+    const safeValue = sanitizeText(value, 80);
+    if (!safeValue) return;
+    setSelectedChips((current) => current.includes(safeValue) ? current.filter((item) => item !== safeValue) : [...current, safeValue].slice(0, 5));
   }
 
   function scrollDraftsIntoView() {
@@ -223,7 +235,7 @@ export function ReviewExperience({
 
   async function generate(ratingOverride: number = selectedRating ?? 5) {
     if (!currentLanguage || loading) return;
-    const chips = unique(selectedChips).slice(0, 5);
+    const chips = unique(selectedChips.map((chip) => sanitizeText(chip, 80))).slice(0, 5);
     if (chips.length < MIN_DETAIL_CHIPS) {
       setValidationError(t.minChips);
       return;
@@ -253,9 +265,9 @@ export function ReviewExperience({
           selected_experiences: chips,
           selected_chip: chips[0],
           rating: ratingOverride,
-          custom_notes: customNotes.trim() || null,
-          patient_name: allowDetailForm ? patientName.trim() || null : null,
-          patient_locality: allowDetailForm ? patientLocality.trim() || null : null,
+          custom_notes: sanitizeText(customNotes, 240) || null,
+          patient_name: allowDetailForm ? sanitizeText(patientName, 60) || null : null,
+          patient_locality: allowDetailForm ? sanitizeText(patientLocality, 60) || null : null,
           language: currentLanguage,
           device_token: token,
           ...(patientLocation || {}),
@@ -338,7 +350,7 @@ export function ReviewExperience({
       <section className="relative z-30 rounded-3xl border border-blue-100 bg-white p-4 shadow-xl sm:p-6"><div className="text-center"><p className="text-xs font-black uppercase tracking-[.14em] text-[#0A4C95] sm:tracking-[.18em]">Tap your rating</p><div className="mt-3 flex justify-center gap-1.5 sm:mt-4 sm:gap-2" role="radiogroup" aria-label="Select star rating" onMouseLeave={() => setHoverRating(null)}>{Array.from({ length: 5 }).map((_, index) => { const value = index + 1; const previewRating = hoverRating ?? selectedRating ?? 0; return <button key={value} type="button" role="radio" aria-checked={selectedRating === value} onMouseEnter={() => setHoverRating(value)} onFocus={() => setHoverRating(value)} onBlur={() => setHoverRating(null)} onClick={() => setSelectedRating(value)} className="group grid h-10 w-10 place-items-center rounded-full transition-colors duration-75 hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4285F4] active:bg-slate-200 sm:h-11 sm:w-11"><GoogleStar active={value <= previewRating} /></button>; })}</div><p className="mt-2 min-h-5 text-sm font-extrabold text-slate-700">{selectedRating ? selectedRating >= 5 ? "Loved it" : selectedRating === 4 ? "Good, with small feedback" : "Needs improvement" : "Select your rating"}</p></div></section>
 
       <section className="relative z-30 rounded-3xl border border-blue-100 bg-white p-4 shadow-xl sm:p-6">
-        {allowDetailForm && <><h2 className="text-lg font-black sm:text-xl">{t.detailTitle}</h2><p className="mt-1 text-sm font-semibold leading-5 text-slate-600">{t.detailHint}</p><div className="mt-4 grid gap-3 sm:mt-5 sm:grid-cols-2 sm:gap-4"><div><label className="label">{t.name}</label><input value={patientName} onChange={(event) => setPatientName(event.target.value)} className="input" placeholder={t.namePlaceholder} maxLength={60} /></div><div><label className="label">{t.locality}</label><input value={patientLocality} onChange={(event) => setPatientLocality(event.target.value)} className="input" placeholder={t.localityPlaceholder} maxLength={80} /></div></div></>}
+        {allowDetailForm && <><h2 className="text-lg font-black sm:text-xl">{t.detailTitle}</h2><p className="mt-1 text-sm font-semibold leading-5 text-slate-600">{t.detailHint}</p><div className="mt-4 grid gap-3 sm:mt-5 sm:grid-cols-2 sm:gap-4"><div><label className="label">{t.name}</label><input value={patientName} onChange={(event) => setPatientName(sanitizeText(event.target.value, 60))} className="input" placeholder={t.namePlaceholder} maxLength={60} /></div><div><label className="label">{t.locality}</label><input value={patientLocality} onChange={(event) => setPatientLocality(sanitizeText(event.target.value, 60))} className="input" placeholder={t.localityPlaceholder} maxLength={60} /></div></div></>}
         <div className={allowDetailForm ? "mt-5" : ""}><div className="flex items-end justify-between gap-3"><div className="min-w-0"><h2 className="text-lg font-black sm:text-xl">{t.chipsTitle}</h2><p className="mt-1 text-xs font-bold leading-5 text-slate-500">{allowDetailForm ? t.chipsHint : "Select at least 2 active dashboard keywords."}</p></div><span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-[#0A4C95]">{selectedChips.length}/{MIN_DETAIL_CHIPS}</span></div><div className="mt-3 grid grid-cols-1 gap-2 min-[360px]:grid-cols-2 sm:mt-4 sm:gap-2.5">{chipOptions.map((value) => <button key={value} type="button" disabled={loading} aria-pressed={selectedChips.includes(value)} onClick={() => toggleChip(value)} className={`min-h-12 rounded-2xl border-2 px-3 py-2.5 text-left text-sm font-black leading-5 transition active:scale-[.98] disabled:opacity-60 sm:min-h-14 sm:px-4 sm:py-3 ${selectedChips.includes(value) ? "border-[#0A4C95] bg-blue-50 text-[#0A4C95] shadow-md" : "border-slate-200 bg-white text-slate-950 shadow-sm"}`}><span className="flex min-w-0 items-center gap-2 break-words">{selectedChips.includes(value) && <Check size={17} className="shrink-0" />}{value}</span></button>)}</div></div>
         {validationError && <p className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-black text-red-700">{validationError}</p>}
         {loading && <div className="mt-4 flex min-h-11 items-center justify-center gap-2 rounded-xl bg-blue-50 px-3 text-sm font-black text-[#0A4C95]"><Loader2 size={18} className="animate-spin" />{t.generating}</div>}

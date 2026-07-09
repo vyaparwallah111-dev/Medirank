@@ -6,6 +6,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 type PageProps={params:{slug:string}|Promise<{slug:string}>};
 type KnowledgeBase={area_name:string;city_name:string;top_services:string[]};
 type OperationalWindow={startIso:string;endIso:string;isActive:boolean};
+const slugPattern=/^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const dynamic='force-dynamic';
 export const revalidate=0;
 
@@ -25,7 +26,7 @@ function getOperationalWindow(now=new Date()):OperationalWindow{
 export default async function PatientPage({params}:PageProps){
   const resolvedParams=await params;
   const resolvedSlug=typeof resolvedParams?.slug==='string'?decodeURIComponent(resolvedParams.slug).trim():'';
-  if(!resolvedSlug)notFound();
+  if(!resolvedSlug||!slugPattern.test(resolvedSlug))notFound();
   const supabase=createAdminClient();
   if(!supabase){console.error('Patient page: Supabase admin client is not configured.');return unavailable()}
 
