@@ -15,6 +15,7 @@ type DashboardEvent = { id: string; created_at: string; event_type: "scan" | "co
 type TrendAggregate = { period: "daily" | "weekly"; bucket_start: string; scans: number | string; posts: number | string };
 type LegacyScan = { id: string; created_at: string; review_copied: boolean | null; redirected_to_gmb: boolean | null };
 type GenerationFlag = "is_name_area_prompted" | "is_language_prompted" | "is_doctor_name_included";
+type OperationalWindow={startIso:string;endIso:string};
 
 function TrendChart({title,subtitle,points}:{title:string;subtitle:string;points:TrendPoint[]}) {
   const max=Math.max(1,...points.flatMap(point=>[point.scans,point.posts]));
@@ -72,9 +73,18 @@ async function syncAnalyticsEventsFromScans(doctorId:string){
   }
 }
 
-async function countGenerationFlag(db: ReturnType<typeof createAdminClient>, doctorId:string, flag:GenerationFlag, since:string){
+function getOperationalWindow(now=new Date()):OperationalWindow{
+  const istOffsetMs=330*60*1000;
+  const istNow=new Date(now.getTime()+istOffsetMs);
+  const year=istNow.getUTCFullYear(),month=istNow.getUTCMonth(),date=istNow.getUTCDate();
+  const start=new Date(Date.UTC(year,month,date,9,0,0)-istOffsetMs);
+  const end=new Date(Date.UTC(year,month,date,21,0,0)-istOffsetMs);
+  return {startIso:start.toISOString(),endIso:end.toISOString()};
+}
+
+async function countGenerationFlag(db: ReturnType<typeof createAdminClient>, doctorId:string, flag:GenerationFlag, since:string, until:string){
   if(!db)return 0;
-  const {count,error}=await db.from("review_generation_meta").select("*",{count:"exact",head:true}).eq("doctor_id",doctorId).eq(flag,true).gte("created_at",since);
+  const {count,error}=await db.from("review_generation_meta").select("*",{count:"exact",head:true}).eq("doctor_id",doctorId).eq(flag,true).gte("created_at",since).lt("created_at",until);
   if(error){
     if(error.code==="42P01"||error.code==="42703")return 0;
     throw error;
@@ -90,7 +100,7 @@ export default async function Dashboard() {
   await syncAnalyticsEventsFromScans(doctor.id);
   const analyticsDb = createAdminClient() || supabase;
   const trendSince=new Date(Date.now()-56*24*60*60*1000).toISOString();
-  const generationSince=new Date(Date.now()-86_400_000).toISOString();
+  const generationWindow=getOperationalWindow();
   const [scansResult, copiedResult, postedResult, recentEventsResult, trendResult, legacyScansResult, legacyCopiedResult, legacyPostedResult, legacyTrendResult] = await Promise.all([
     analyticsDb.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "scan"),
     analyticsDb.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "copy"),
@@ -121,9 +131,9 @@ export default async function Dashboard() {
   const isStarter = (doctor.subscription_tier?.trim().toLowerCase() || "starter") === "starter";
   const isGrowth = doctor.subscription_tier?.trim().toLowerCase() === "growth";
   const [languageTriggers,nameAreaPrompts,doctorNameInjections]=await Promise.all([
-    countGenerationFlag(analyticsDb,doctor.id,"is_language_prompted",generationSince),
-    countGenerationFlag(analyticsDb,doctor.id,"is_name_area_prompted",generationSince),
-    countGenerationFlag(analyticsDb,doctor.id,"is_doctor_name_included",generationSince),
+    countGenerationFlag(analyticsDb,doctor.id,"is_language_prompted",generationWindow.startIso,generationWindow.endIso),
+    countGenerationFlag(analyticsDb,doctor.id,"is_name_area_prompted",generationWindow.startIso,generationWindow.endIso),
+    countGenerationFlag(analyticsDb,doctor.id,"is_doctor_name_included",generationWindow.startIso,generationWindow.endIso),
   ]);
   const generationUsage=[
     ["Language Triggers",languageTriggers,5],

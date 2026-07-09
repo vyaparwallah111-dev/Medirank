@@ -10,7 +10,7 @@ type Language = "english" | "hinglish";
 type Theme = { primary?: string; accent?: string; background?: string };
 type Doctor = { id: string; doctor_name: string; clinic_name: string; specialization: string | null; gmb_review_link: string | null; logo_url?: string | null; theme_config?: Theme | null };
 type Location = { latitude: number; longitude: number };
-type RoutingState = { scanSequence24h: number; allowLanguageStep: boolean; allowDetailForm: boolean };
+type RoutingState = { operationalScanSequence: number; allowLanguageStep: boolean; allowDetailForm: boolean };
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ThankYouAnimation = dynamic(() => import("./thank-you-animation"), { ssr: false });

@@ -5,12 +5,22 @@ import { createAdminClient } from '@/lib/supabase/admin';
 
 type PageProps={params:{slug:string}|Promise<{slug:string}>};
 type KnowledgeBase={area_name:string;city_name:string;top_services:string[]};
+type OperationalWindow={startIso:string;endIso:string;isActive:boolean};
 export const dynamic='force-dynamic';
 export const revalidate=0;
 
 function unavailable(){return <main className="grid min-h-[100dvh] place-items-center bg-slate-50 px-5"><div className="max-w-sm rounded-2xl border border-slate-200 bg-white p-7 text-center shadow-sm"><AlertCircle className="mx-auto text-orange" size={32}/><h1 className="mt-4 text-xl font-bold">Patient page unavailable</h1><p className="mt-2 text-sm leading-6 text-slate-500">We couldn’t load this clinic right now. Please try scanning the QR code again shortly.</p></div></main>}
 
 function starterLimit(){return <main className="grid min-h-[100dvh] place-items-center bg-slate-50 px-5"><div className="max-w-md rounded-3xl border border-blue-100 bg-white p-8 text-center shadow-soft"><AlertCircle className="mx-auto text-brand" size={38}/><h1 className="mt-5 text-2xl font-extrabold text-slate-950">Plan Limit Exceeded</h1><p className="mt-3 font-bold leading-7 text-slate-700">Upgrade Your Plan to continue using MediRank.</p><div className="fixed inset-x-0 bottom-0 border-t border-slate-200 bg-white/95 px-4 py-3 text-center text-sm font-bold text-slate-700 backdrop-blur">Powered by Vyapar Wallah</div></div></main>}
+
+function getOperationalWindow(now=new Date()):OperationalWindow{
+  const istOffsetMs=330*60*1000;
+  const istNow=new Date(now.getTime()+istOffsetMs);
+  const year=istNow.getUTCFullYear(),month=istNow.getUTCMonth(),date=istNow.getUTCDate();
+  const start=new Date(Date.UTC(year,month,date,9,0,0)-istOffsetMs);
+  const end=new Date(Date.UTC(year,month,date,21,0,0)-istOffsetMs);
+  return {startIso:start.toISOString(),endIso:end.toISOString(),isActive:now>=start&&now<end};
+}
 
 export default async function PatientPage({params}:PageProps){
   const resolvedParams=await params;
@@ -52,19 +62,22 @@ export default async function PatientPage({params}:PageProps){
     }else if(scanResult.status==='rejected'){
       console.error('Patient page scan session insert failed:',scanResult.reason);
     }
-    const rollingSince=new Date(Date.now()-86_400_000).toISOString();
-    const {count:rollingScanCount,error:routingCountError}=await supabase
-      .from('analytics_events')
-      .select('*',{count:'exact',head:true})
-      .eq('doctor_id',doctor.id)
-      .eq('event_type','scan')
-      .gte('created_at',rollingSince);
-    if(routingCountError)console.error('Patient page 24-hour routing lookup failed:',routingCountError.message);
-    const scanSequence24h=Math.max(1,rollingScanCount??1);
+    const operationalWindow=getOperationalWindow();
+    const {count:operationalScanCount,error:routingCountError}=operationalWindow.isActive
+      ? await supabase
+        .from('analytics_events')
+        .select('*',{count:'exact',head:true})
+        .eq('doctor_id',doctor.id)
+        .eq('event_type','scan')
+        .gte('created_at',operationalWindow.startIso)
+        .lt('created_at',operationalWindow.endIso)
+      : {count:0,error:null};
+    if(routingCountError)console.error('Patient page operational routing lookup failed:',routingCountError.message);
+    const operationalScanSequence=Math.max(1,operationalScanCount??1);
     const routingState={
-      scanSequence24h,
-      allowLanguageStep:scanSequence24h<=5,
-      allowDetailForm:scanSequence24h<=5,
+      operationalScanSequence,
+      allowLanguageStep:operationalWindow.isActive&&operationalScanSequence<=5,
+      allowDetailForm:operationalWindow.isActive&&operationalScanSequence<=5,
     };
     const treatmentKeywords=keywords.filter(item=>item.category==='treatment').map(item=>item.keyword).filter(Boolean);
     const topServices=Array.from(new Set<string>([...knowledgeBase.top_services,...treatmentKeywords]));

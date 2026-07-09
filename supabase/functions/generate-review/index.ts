@@ -10,8 +10,8 @@ const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status
 const GEMINI_MODEL='gemini-3.1-flash-lite';
 const GEMINI_TIMEOUT_MS=7_000;
 const TARGET_COUNT=4;
-const ROUTING_CAP_24H=5;
-const DOCTOR_NAME_CAP_24H=5;
+const ROUTING_CAP_DAILY=5;
+const DOCTOR_NAME_CAP_DAILY=5;
 const DAILY_KEYWORD_SEQUENCE_CAP=10;
 
 type KB={area_name?:unknown;city_name?:unknown;top_services?:unknown};
@@ -27,7 +27,14 @@ const jsonList=(value:unknown):string[]=>{
   if(value&&typeof value==='object')return Object.values(value as Record<string,unknown>).flatMap(jsonList);
   return [];
 };
-const indiaDayStart=()=>{const now=new Date();const india=new Date(now.getTime()+330*60_000);return new Date(Date.UTC(india.getUTCFullYear(),india.getUTCMonth(),india.getUTCDate())-330*60_000).toISOString()};
+function operationalWindow(now=new Date()){
+  const istOffsetMs=330*60_000;
+  const istNow=new Date(now.getTime()+istOffsetMs);
+  const year=istNow.getUTCFullYear(),month=istNow.getUTCMonth(),date=istNow.getUTCDate();
+  const start=new Date(Date.UTC(year,month,date,9,0,0)-istOffsetMs);
+  const end=new Date(Date.UTC(year,month,date,21,0,0)-istOffsetMs);
+  return {startIso:start.toISOString(),endIso:end.toISOString(),isActive:now>=start&&now<end};
+}
 async function sha256(value:string){const bytes=new TextEncoder().encode(value);const digest=await crypto.subtle.digest('SHA-256',bytes);return Array.from(new Uint8Array(digest)).map(byte=>byte.toString(16).padStart(2,'0')).join('')}
 const haversine=(lat1:number,lon1:number,lat2:number,lon2:number)=>{const rad=(value:number)=>value*Math.PI/180;const dLat=rad(lat2-lat1),dLon=rad(lon2-lon1);const a=Math.sin(dLat/2)**2+Math.cos(rad(lat1))*Math.cos(rad(lat2))*Math.sin(dLon/2)**2;return 6_371_000*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))};
 
@@ -175,13 +182,15 @@ Deno.serve(async(req)=>{
     let locationVerified:boolean|null=null,distanceMeters:number|null=null;
     if(hasPatientLocation&&hasClinicLocation){distanceMeters=Math.round(haversine(patientLatitude,patientLongitude,Number(doctor.latitude),Number(doctor.longitude)));locationVerified=distanceMeters<=500}
 
-    const rollingSince=new Date(Date.now()-86_400_000).toISOString();
-    const scanCountResult=await db.from('analytics_events').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).eq('event_type','scan').gte('created_at',rollingSince);
-    if(scanCountResult.error)console.error('24-hour scan routing lookup failed; defaulting to gated route',scanCountResult.error);
-    const scanSequence24h=Math.max(1,scanCountResult.count??1);
-    const allowLanguageStep=scanSequence24h<=ROUTING_CAP_24H;
-    const allowDetailForm=scanSequence24h<=ROUTING_CAP_24H;
-    if(body.precheck_only===true)return reply({allowed:true,location_verified:locationVerified,distance_meters:distanceMeters,routing:{scan_sequence_24h:scanSequence24h,allow_language_step:allowLanguageStep,allow_detail_form:allowDetailForm}});
+    const opWindow=operationalWindow();
+    const scanCountResult=opWindow.isActive
+      ? await db.from('analytics_events').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).eq('event_type','scan').gte('created_at',opWindow.startIso).lt('created_at',opWindow.endIso)
+      : {count:0,error:null};
+    if(scanCountResult.error)console.error('Operational scan routing lookup failed; defaulting to express route',scanCountResult.error);
+    const operationalScanSequence=Math.max(1,scanCountResult.count??1);
+    const allowLanguageStep=opWindow.isActive&&operationalScanSequence<=ROUTING_CAP_DAILY;
+    const allowDetailForm=opWindow.isActive&&operationalScanSequence<=ROUTING_CAP_DAILY;
+    if(body.precheck_only===true)return reply({allowed:true,location_verified:locationVerified,distance_meters:distanceMeters,routing:{operational_scan_sequence:operationalScanSequence,operational_window_active:opWindow.isActive,operational_window_start:opWindow.startIso,operational_window_end:opWindow.endIso,allow_language_step:allowLanguageStep,allow_detail_form:allowDetailForm}});
 
     const effectiveLanguage:Language=allowLanguageStep&&body.language==='hinglish'?'hinglish':'english';
     fallbackLanguage=effectiveLanguage;
@@ -200,16 +209,17 @@ Deno.serve(async(req)=>{
       .filter(item=>!allowedKeywords.size||allowedKeywords.has(normalize(item)));
     const selectedChips=requestedChips.length?requestedChips:activeKeywords.slice(0,2);
     const serviceKeyword=selectedChips[0]||activeKeywords[0]||'service';
-    const metaCountResult=await db.from('review_generation_meta').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).eq('is_doctor_name_included',true).gte('created_at',rollingSince);
-    if(metaCountResult.error)console.error('Doctor name 24-hour meta lookup failed; defaulting to no doctor-name injection',metaCountResult.error);
-    const doctorNameIncluded24h=metaCountResult.error?DOCTOR_NAME_CAP_24H:(metaCountResult.count??0);
-    const includeDoctorName=doctorNameIncluded24h<DOCTOR_NAME_CAP_24H;
+    const metaCountResult=opWindow.isActive
+      ? await db.from('review_generation_meta').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).eq('is_doctor_name_included',true).gte('created_at',opWindow.startIso).lt('created_at',opWindow.endIso)
+      : {count:0,error:null};
+    if(metaCountResult.error)console.error('Doctor name operational meta lookup failed; defaulting to no doctor-name injection',metaCountResult.error);
+    const doctorNameIncludedToday=metaCountResult.error?DOCTOR_NAME_CAP_DAILY:(metaCountResult.count??0);
+    const includeDoctorName=opWindow.isActive&&doctorNameIncludedToday<DOCTOR_NAME_CAP_DAILY;
     const isNameAreaPrompted=allowDetailForm;
     const isLanguagePrompted=allowLanguageStep;
     const allowEmoji=rating>=4&&Math.random()<.45;
 
-    const dailySince=indiaDayStart();
-    const dailyCountResult=await db.from('review_generation_events').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).gte('created_at',dailySince);
+    const dailyCountResult=await db.from('review_generation_events').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).gte('created_at',opWindow.startIso).lt('created_at',opWindow.endIso);
     if(dailyCountResult.error)console.error('Daily generation sequence lookup failed; defaulting to first generation',dailyCountResult.error);
     const dailySequence=(dailyCountResult.count??0)+1;
     const strategy:Strategy=dailySequence<=DAILY_KEYWORD_SEQUENCE_CAP&&dailySequence%2===1?'seo_injection':'clean_ambient';
@@ -226,7 +236,7 @@ Respect line breaks as real review lines.`;
       : `strategy: Clean ambient. Focus only on abstract user behavior, comfort, process, waiting, listening, clarity, or atmosphere. ZERO structural keywords: do not mention or paraphrase these exact assets: ${JSON.stringify(blockedKeywords)}. Do not mention clinic name, doctor name, locality, selected chips, treatments, or SEO terms.`;
     const executionLayout=`EXECUTION_LAYOUT
 model: ${GEMINI_MODEL}
-request_window: rolling_24h_scan_sequence=${scanSequence24h}; language_step_active=${allowLanguageStep}; form_fields_active=${allowDetailForm}
+operational_window: active=${opWindow.isActive}; start=${opWindow.startIso}; end=${opWindow.endIso}; scan_sequence_today=${operationalScanSequence}; language_step_active=${allowLanguageStep}; form_fields_active=${allowDetailForm}
 daily_generation_sequence: ${dailySequence}
 language: ${effectiveLanguage==='hinglish'?'Hinglish in Latin script':'English'}
 ${strategyBlock}
@@ -244,7 +254,7 @@ Return only valid JSON array.`;
         contents:[{parts:[{text:structuralPrefix},{text:executionLayout}]}],
         generationConfig:{temperature:.82,topP:.95,topK:40,maxOutputTokens:1200,responseMimeType:'application/json'},
       };
-      console.log('Gemini request',{model:GEMINI_MODEL,doctor_id:doctor.id,scanSequence24h,dailySequence,strategy,rating,effectiveLanguage,maxOutputTokens:1200});
+      console.log('Gemini request',{model:GEMINI_MODEL,doctor_id:doctor.id,operationalScanSequence,operationalWindowActive:opWindow.isActive,dailySequence,strategy,rating,effectiveLanguage,maxOutputTokens:1200});
       const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},GEMINI_TIMEOUT_MS);
       const responseText=await response.text();
       if(!response.ok){
@@ -276,17 +286,20 @@ Return only valid JSON array.`;
     if(includeDoctorName)reviews=reviews.map(review=>injectDoctorName(review,text(doctor.doctor_name),rating,effectiveLanguage));
 
     const metadata={
-      policy_version:'state-driven-24h-v1',
+      policy_version:'state-driven-operational-window-v1',
       model:GEMINI_MODEL,
       max_output_tokens:1200,
-      scan_sequence_24h:scanSequence24h,
+      operational_window_active:opWindow.isActive,
+      operational_window_start:opWindow.startIso,
+      operational_window_end:opWindow.endIso,
+      operational_scan_sequence:operationalScanSequence,
       allow_language_step:allowLanguageStep,
       allow_detail_form:allowDetailForm,
       is_name_area_prompted:isNameAreaPrompted,
       is_language_prompted:isLanguagePrompted,
       is_doctor_name_included:includeDoctorName,
-      doctor_name_injections_24h_before:doctorNameIncluded24h,
-      doctor_name_cap_24h:DOCTOR_NAME_CAP_24H,
+      doctor_name_injections_today_before:doctorNameIncludedToday,
+      doctor_name_cap_daily:DOCTOR_NAME_CAP_DAILY,
       emoji_enabled:allowEmoji,
       daily_generation_sequence:dailySequence,
       strategy,
@@ -334,7 +347,7 @@ Return only valid JSON array.`;
       if(error)console.error('Device fingerprint audit upsert failed; continuing',error);
     }catch(error){console.error('Device fingerprint audit upsert threw; continuing',error)}
 
-    return reply({reviews,target_count:TARGET_COUNT,quality:{...metadata,routing:{scan_sequence_24h:scanSequence24h,allow_language_step:allowLanguageStep,allow_detail_form:allowDetailForm}}});
+    return reply({reviews,target_count:TARGET_COUNT,quality:{...metadata,routing:{operational_scan_sequence:operationalScanSequence,operational_window_active:opWindow.isActive,operational_window_start:opWindow.startIso,operational_window_end:opWindow.endIso,allow_language_step:allowLanguageStep,allow_detail_form:allowDetailForm}}});
   }catch(error){
     console.error('Unhandled generate-review error; returning emergency drafts',error);
     void logSystemError(db,doctorIdForAudit,error instanceof Error?error.message:String(error));
