@@ -52,9 +52,23 @@ export default async function PatientPage({params}:PageProps){
     }else if(scanResult.status==='rejected'){
       console.error('Patient page scan session insert failed:',scanResult.reason);
     }
+    const rollingSince=new Date(Date.now()-86_400_000).toISOString();
+    const {count:rollingScanCount,error:routingCountError}=await supabase
+      .from('analytics_events')
+      .select('*',{count:'exact',head:true})
+      .eq('doctor_id',doctor.id)
+      .eq('event_type','scan')
+      .gte('created_at',rollingSince);
+    if(routingCountError)console.error('Patient page 24-hour routing lookup failed:',routingCountError.message);
+    const scanSequence24h=Math.max(1,rollingScanCount??1);
+    const routingState={
+      scanSequence24h,
+      allowLanguageStep:scanSequence24h<=5,
+      allowDetailForm:scanSequence24h<=5,
+    };
     const treatmentKeywords=keywords.filter(item=>item.category==='treatment').map(item=>item.keyword).filter(Boolean);
     const topServices=Array.from(new Set<string>([...knowledgeBase.top_services,...treatmentKeywords]));
-    return <ReviewExperience doctor={doctor} isStarter={isStarter} isGrowth={isGrowth} scanId={scan?.id??null} experienceKeywords={keywords.filter(item=>item.category!=='treatment').map(item=>item.keyword).filter(Boolean)} topServices={topServices}/>;
+    return <ReviewExperience doctor={doctor} isStarter={isStarter} isGrowth={isGrowth} scanId={scan?.id??null} experienceKeywords={keywords.filter(item=>item.category!=='treatment').map(item=>item.keyword).filter(Boolean)} topServices={topServices} routingState={routingState}/>;
   }catch(error){
     // Preserve Next.js navigation signals such as notFound().
     if(error&&typeof error==='object'&&'digest' in error)throw error;
