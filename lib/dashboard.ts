@@ -45,6 +45,6 @@ export async function getCurrentDoctor(): Promise<Doctor> {
   return data as Doctor;
 }
 
-export function displayDoctorName(name: string) {
-  return name.replace(/^dr\.?\s*/i, '').trim();
+export function displayDoctorName(name: string | null | undefined) {
+  return (name || '').replace(/^dr\.?\s*/i, '').trim();
 }

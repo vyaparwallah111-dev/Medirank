@@ -53,24 +53,28 @@ function eventsFromScans(rows:LegacyScan[]):DashboardEvent[]{
 }
 
 async function syncAnalyticsEventsFromScans(doctorId:string){
-  const admin=createAdminClient();
-  if(!admin)return;
-  for(let from=0;;from+=1000){
-    const {data,error}=await admin.from("scans").select("id,created_at,review_copied,redirected_to_gmb").eq("doctor_id",doctorId).order("created_at",{ascending:true}).range(from,from+999);
-    if(error){console.error("Dashboard analytics scan sync failed:",error.message);await admin.from("system_error_logs").insert({doctor_id:doctorId,endpoint:"dashboard.analytics.sync",error_message:error.message.slice(0,1000),severity:"error"});return;}
-    const rows=(data??[]) as LegacyScan[];
-    if(!rows.length)return;
-    const events=rows.flatMap(row=>{
-      const items=[{doctor_id:doctorId,scan_id:row.id,event_type:"scan",created_at:row.created_at}];
-      if(row.review_copied)items.push({doctor_id:doctorId,scan_id:row.id,event_type:"copy",created_at:row.created_at});
-      if(row.redirected_to_gmb)items.push({doctor_id:doctorId,scan_id:row.id,event_type:"click_maps",created_at:row.created_at});
-      return items;
-    });
-    if(events.length){
-      const {error:upsertError}=await admin.from("analytics_events").upsert(events,{onConflict:"scan_id,event_type"});
-      if(upsertError){console.error("Dashboard analytics event sync failed:",upsertError.message);await admin.from("system_error_logs").insert({doctor_id:doctorId,endpoint:"dashboard.analytics.sync",error_message:upsertError.message.slice(0,1000),severity:"error"});return;}
+  try{
+    const admin=createAdminClient();
+    if(!admin)return;
+    for(let from=0;;from+=1000){
+      const {data,error}=await admin.from("scans").select("id,created_at,review_copied,redirected_to_gmb").eq("doctor_id",doctorId).order("created_at",{ascending:true}).range(from,from+999);
+      if(error){console.error("Dashboard analytics scan sync failed:",error.message);return;}
+      const rows=(data??[]) as LegacyScan[];
+      if(!rows.length)return;
+      const events=rows.flatMap(row=>{
+        const items=[{doctor_id:doctorId,scan_id:row.id,event_type:"scan",created_at:row.created_at}];
+        if(row.review_copied)items.push({doctor_id:doctorId,scan_id:row.id,event_type:"copy",created_at:row.created_at});
+        if(row.redirected_to_gmb)items.push({doctor_id:doctorId,scan_id:row.id,event_type:"click_maps",created_at:row.created_at});
+        return items;
+      });
+      if(events.length){
+        const {error:upsertError}=await admin.from("analytics_events").upsert(events,{onConflict:"scan_id,event_type"});
+        if(upsertError){console.error("Dashboard analytics event sync failed:",upsertError.message);return;}
+      }
+      if(rows.length<1000)return;
     }
-    if(rows.length<1000)return;
+  }catch(error){
+    console.error("Dashboard analytics sync skipped:",error);
   }
 }
 
@@ -87,8 +91,8 @@ async function countGenerationFlag(db: ReturnType<typeof createAdminClient>, doc
   if(!db)return 0;
   const {count,error}=await db.from("review_generation_meta").select("*",{count:"exact",head:true}).eq("doctor_id",doctorId).eq(flag,true).gte("created_at",since).lt("created_at",until);
   if(error){
-    if(error.code==="42P01"||error.code==="42703")return 0;
-    throw error;
+    console.error("Dashboard generation flag count failed:",flag,error.message);
+    return 0;
   }
   return count??0;
 }
@@ -115,7 +119,7 @@ export default async function Dashboard() {
     supabase.from("scans").select("id,created_at,review_copied,redirected_to_gmb").eq("doctor_id", doctor.id).gte("created_at", trendSince).order("created_at"),
   ]);
   const analyticsError=scansResult.error||copiedResult.error||postedResult.error||recentEventsResult.error||trendResult.error||legacyScansResult.error||legacyCopiedResult.error||legacyPostedResult.error||legacyTrendResult.error;
-  if(analyticsError)throw new Error(`Unable to load dashboard analytics: ${analyticsError.message}`);
+  if(analyticsError)console.error("Dashboard analytics partially unavailable; rendering fallback metrics:",analyticsError.message);
 
   const scans = Math.max(scansResult.count ?? 0, legacyScansResult.count ?? 0);
   const copied = Math.max(copiedResult.count ?? 0, legacyCopiedResult.count ?? 0);
