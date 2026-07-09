@@ -43,7 +43,6 @@ const copy = {
     chipsTitle: "Pick visit highlights",
     chipsHint: "These options are managed by the clinic.",
     minChips: "Select at least 2 highlights to continue.",
-    generate: "Generate my review",
     generating: "Writing your drafts...",
     draftsTitle: "Choose your favorite draft",
     copyReview: "Copy Review",
@@ -66,7 +65,6 @@ const copy = {
     chipsTitle: "Visit highlights chunein",
     chipsHint: "Ye options clinic dashboard se aate hain.",
     minChips: "Aage badhne ke liye kam se kam 2 highlights select karein.",
-    generate: "Mera review banayein",
     generating: "Aapke drafts ban rahe hain...",
     draftsTitle: "Apna favorite draft chunein",
     copyReview: "Review Copy Karein",
@@ -131,6 +129,7 @@ export function ReviewExperience({
   const analyticsScanIdRef = useRef<string | null>(scanId);
   const scanInitializedRef = useRef(false);
   const draftsSectionRef = useRef<HTMLElement | null>(null);
+  const autoGenerationKeyRef = useRef("");
 
   const t = currentLanguage ? copy[currentLanguage] : copy.english;
   const doctorName = titleCase(doctor.doctor_name.replace(/^dr\.?\s*/i, ""));
@@ -198,6 +197,15 @@ export function ReviewExperience({
     return () => window.clearTimeout(timer);
   }, [showThankYou]);
 
+  useEffect(() => {
+    if (!currentLanguage || loading || selectedChips.length !== MIN_DETAIL_CHIPS) return;
+    const generationKey = `${selectedChips.join("|")}:${selectedRating ?? "default"}`;
+    if (autoGenerationKeyRef.current === generationKey) return;
+    autoGenerationKeyRef.current = generationKey;
+    scrollDraftsIntoView();
+    void generate(selectedRating ?? 5);
+  }, [currentLanguage, loading, selectedChips, selectedRating]);
+
   function rememberScanId(nextScanId?: string) {
     if (!nextScanId) return;
     analyticsScanIdRef.current = nextScanId;
@@ -213,15 +221,11 @@ export function ReviewExperience({
     window.setTimeout(() => draftsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
   }
 
-  async function generate(ratingOverride = selectedRating) {
+  async function generate(ratingOverride: number = selectedRating ?? 5) {
     if (!currentLanguage || loading) return;
     const chips = unique(selectedChips).slice(0, 5);
     if (chips.length < MIN_DETAIL_CHIPS) {
       setValidationError(t.minChips);
-      return;
-    }
-    if (!ratingOverride) {
-      setValidationError(currentLanguage === "hinglish" ? "Pehle star rating select karein." : "Select a star rating first.");
       return;
     }
     setLoading(true);
@@ -337,7 +341,7 @@ export function ReviewExperience({
         {allowDetailForm && <><h2 className="text-lg font-black sm:text-xl">{t.detailTitle}</h2><p className="mt-1 text-sm font-semibold leading-5 text-slate-600">{t.detailHint}</p><div className="mt-4 grid gap-3 sm:mt-5 sm:grid-cols-2 sm:gap-4"><div><label className="label">{t.name}</label><input value={patientName} onChange={(event) => setPatientName(event.target.value)} className="input" placeholder={t.namePlaceholder} maxLength={60} /></div><div><label className="label">{t.locality}</label><input value={patientLocality} onChange={(event) => setPatientLocality(event.target.value)} className="input" placeholder={t.localityPlaceholder} maxLength={80} /></div></div></>}
         <div className={allowDetailForm ? "mt-5" : ""}><div className="flex items-end justify-between gap-3"><div className="min-w-0"><h2 className="text-lg font-black sm:text-xl">{t.chipsTitle}</h2><p className="mt-1 text-xs font-bold leading-5 text-slate-500">{allowDetailForm ? t.chipsHint : "Select at least 2 active dashboard keywords."}</p></div><span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-[#0A4C95]">{selectedChips.length}/{MIN_DETAIL_CHIPS}</span></div><div className="mt-3 grid grid-cols-1 gap-2 min-[360px]:grid-cols-2 sm:mt-4 sm:gap-2.5">{chipOptions.map((value) => <button key={value} type="button" disabled={loading} aria-pressed={selectedChips.includes(value)} onClick={() => toggleChip(value)} className={`min-h-12 rounded-2xl border-2 px-3 py-2.5 text-left text-sm font-black leading-5 transition active:scale-[.98] disabled:opacity-60 sm:min-h-14 sm:px-4 sm:py-3 ${selectedChips.includes(value) ? "border-[#0A4C95] bg-blue-50 text-[#0A4C95] shadow-md" : "border-slate-200 bg-white text-slate-950 shadow-sm"}`}><span className="flex min-w-0 items-center gap-2 break-words">{selectedChips.includes(value) && <Check size={17} className="shrink-0" />}{value}</span></button>)}</div></div>
         {validationError && <p className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-black text-red-700">{validationError}</p>}
-        <button type="button" disabled={loading || selectedChips.length < MIN_DETAIL_CHIPS || !selectedRating} onClick={() => void generate(selectedRating)} className="mt-5 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-3 text-sm font-black text-white disabled:bg-slate-300 disabled:text-slate-600 sm:mt-6 sm:min-h-14 sm:px-4 sm:text-base">{loading && <Loader2 size={18} className="animate-spin" />}{loading ? t.generating : t.generate}</button>
+        {loading && <div className="mt-4 flex min-h-11 items-center justify-center gap-2 rounded-xl bg-blue-50 px-3 text-sm font-black text-[#0A4C95]"><Loader2 size={18} className="animate-spin" />{t.generating}</div>}
       </section>
 
       <section ref={draftsSectionRef} className="relative z-30 scroll-mt-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-xl sm:scroll-mt-6 sm:p-6"><div className="flex items-center justify-between gap-3"><div className="min-w-0"><h2 className="text-lg font-black sm:text-xl">{t.draftsTitle}</h2>{selectedChips.length > 0 && <p className="mt-1 break-words text-xs font-bold leading-5 text-slate-500 sm:text-sm">{selectedChips.join(", ")} - {reviewRating} star tone</p>}</div>{loading && <Loader2 size={22} className="shrink-0 animate-spin text-[#0A4C95]" />}</div>{loading ? <div className="mt-4 space-y-3 sm:mt-5 sm:space-y-4" aria-live="polite">{Array.from({ length: 3 }).map((_, index) => <div key={index} className="rounded-2xl border border-slate-200 p-3 sm:p-4"><div className="h-4 w-28 animate-pulse rounded-full bg-slate-200" /><div className="mt-4 space-y-2"><div className="h-3 w-full animate-pulse rounded-full bg-slate-100" /><div className="h-3 w-11/12 animate-pulse rounded-full bg-slate-100" /><div className="h-3 w-8/12 animate-pulse rounded-full bg-slate-100" /></div><div className="mt-4 h-10 animate-pulse rounded-xl bg-blue-50 sm:h-11" /></div>)}</div> : reviews.length ? <div className="mt-4 space-y-3 sm:space-y-4">{reviews.map((review, index) => <article key={index} className="rounded-2xl border-2 border-slate-200 p-3 sm:p-4"><div className="flex gap-1.5">{Array.from({ length: 5 }).map((_, star) => <GoogleStar key={star} active={star < reviewRating} size={16} />)}</div><p className="mt-3 whitespace-pre-line break-words text-sm font-semibold leading-6 sm:text-base sm:leading-7">{review}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-3 text-sm font-black text-white sm:min-h-12 sm:px-4 sm:text-base"><Clipboard size={18} />{t.copyReview}</button></article>)}</div> : <div className="mt-4 rounded-2xl border border-dashed border-slate-300 p-4 text-center text-sm font-bold text-slate-500 sm:mt-5 sm:p-6">{t.empty}</div>}</section>

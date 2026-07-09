@@ -11,6 +11,7 @@ const GEMINI_MODEL='gemini-3.1-flash-lite';
 const GEMINI_TIMEOUT_MS=7_000;
 const TARGET_COUNT=4;
 const ROUTING_CAP_24H=5;
+const DOCTOR_NAME_CAP_24H=5;
 const DAILY_KEYWORD_SEQUENCE_CAP=10;
 
 type KB={area_name?:unknown;city_name?:unknown;top_services?:unknown};
@@ -62,12 +63,18 @@ function parseReviews(raw:unknown,expectedCount:number){
   return unique(candidate.split(/\n\s*\n+|---REVIEW_SPLIT---/).map(clean),expectedCount);
 }
 
-function ratingLayout(rating:number,language:Language,serviceKeyword:string){
+function ratingLayout(rating:number,language:Language,serviceKeyword:string,doctorName:string,includeDoctorName:boolean,allowEmoji:boolean){
   const service=serviceKeyword||'service';
-  if(rating===1)return `rating_shape: 1 star. Sharp negative but constructive. Naturally embed "${service}" with direct friction context. Keep it fair, no threats, no unsafe medical claims.`;
-  if(rating===2)return 'rating_shape: 2 stars. Casual low-satisfaction plain narrative. Sound disappointed but not dramatic.';
-  if(rating===3)return 'rating_shape: 3 stars. Mid-tier neutral review, strictly 2 to 4 text lines per review.';
-  return `rating_shape: ${rating} stars. Long comprehensive story-driven patient experience, exactly 10 to 12 text lines per review. Combine active name/locality inputs naturally when present.`;
+  const doctorRule=includeDoctorName
+    ? `doctor_name_rule: include the exact doctor name "${doctorName}" naturally in every draft while respecting the rating shape.`
+    : 'doctor_name_rule: do not mention any doctor name.';
+  const emojiRule=allowEmoji
+    ? 'emoji_rule: high-tier only; randomly allow at most one sparse contextual emoji in some drafts, chosen organically from examples like 👍, 🦷, ⭐. Never repeat the same emoji in every draft.'
+    : 'emoji_rule: no emoji.';
+  if(rating===1)return `rating_shape: 1 star. Sharp negative but constructive. Naturally embed "${service}" with direct friction context. Keep it fair, no threats, no unsafe medical claims. ${doctorRule} ${emojiRule}`;
+  if(rating===2)return `rating_shape: 2 stars. Casual low-satisfaction plain narrative. Sound disappointed but not dramatic. ${doctorRule} ${emojiRule}`;
+  if(rating===3)return `rating_shape: 3 stars. Mid-tier neutral review, strictly 2 to 4 text lines per review. ${doctorRule} ${emojiRule}`;
+  return `rating_shape: ${rating} stars. Long comprehensive story-driven patient experience, exactly 10 to 12 text lines per review. Combine active name/locality inputs naturally when present. ${doctorRule} ${emojiRule}`;
 }
 
 function targetLineCount(rating:number){
@@ -93,6 +100,27 @@ function shapeLines(content:string,rating:number,language:Language){
   const next=[...lines];
   for(const filler of fillers){if(next.length>=shape.target)break;if(!next.some(line=>normalize(line)===normalize(filler)))next.push(filler)}
   return next.slice(0,shape.max).join('\n');
+}
+
+function injectDoctorName(content:string,doctorName:string,rating:number,language:Language){
+  if(!doctorName||normalize(content).includes(normalize(doctorName)))return shapeLines(content,rating,language);
+  const lines=content.split(/\n+/).map(line=>line.trim()).filter(Boolean);
+  if(rating===1){
+    lines[0]=language==='hinglish'
+      ? `${doctorName} ke visit mein ${lines[0]||'experience expected se weak laga.'}`
+      : `${doctorName} was part of my visit, and ${lines[0]||'the experience felt below expectations.'}`;
+  }else if(rating===3){
+    lines[0]=language==='hinglish'
+      ? `${doctorName} ke saath visit neutral raha.`
+      : `My visit with ${doctorName} felt neutral.`;
+  }else if(rating>=4){
+    lines.splice(Math.min(2,lines.length),0,language==='hinglish'?`${doctorName} ne concerns calmly sune.`:`${doctorName} listened to my concerns calmly.`);
+  }else{
+    lines[0]=language==='hinglish'
+      ? `${doctorName} ke saath experience low-satisfaction raha.`
+      : `My experience with ${doctorName} felt low-satisfaction.`;
+  }
+  return shapeLines(lines.join('\n'),rating,language);
 }
 
 function emergencyDrafts(language:Language,rating=5){
@@ -140,6 +168,7 @@ Deno.serve(async(req)=>{
     if(!deviceToken)return reply({error:'Unable to verify this device. Please refresh and try again.'},400);
     const browserSignature=(req.headers.get('user-agent')||'unknown').slice(0,300);
     const fingerprintHash=await sha256(`${doctor.id}|${deviceToken}|${browserSignature}`);
+    const scanId=text(body.scan_id).slice(0,80);
     const patientLatitude=typeof body.latitude==='number'?body.latitude:NaN,patientLongitude=typeof body.longitude==='number'?body.longitude:NaN;
     const hasPatientLocation=Number.isFinite(patientLatitude)&&Number.isFinite(patientLongitude)&&patientLatitude>=-90&&patientLatitude<=90&&patientLongitude>=-180&&patientLongitude<=180;
     const hasClinicLocation=Number.isFinite(doctor.latitude)&&Number.isFinite(doctor.longitude);
@@ -171,6 +200,13 @@ Deno.serve(async(req)=>{
       .filter(item=>!allowedKeywords.size||allowedKeywords.has(normalize(item)));
     const selectedChips=requestedChips.length?requestedChips:activeKeywords.slice(0,2);
     const serviceKeyword=selectedChips[0]||activeKeywords[0]||'service';
+    const metaCountResult=await db.from('review_generation_meta').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).eq('is_doctor_name_included',true).gte('created_at',rollingSince);
+    if(metaCountResult.error)console.error('Doctor name 24-hour meta lookup failed; defaulting to no doctor-name injection',metaCountResult.error);
+    const doctorNameIncluded24h=metaCountResult.error?DOCTOR_NAME_CAP_24H:(metaCountResult.count??0);
+    const includeDoctorName=doctorNameIncluded24h<DOCTOR_NAME_CAP_24H;
+    const isNameAreaPrompted=allowDetailForm;
+    const isLanguagePrompted=allowLanguageStep;
+    const allowEmoji=rating>=4&&Math.random()<.45;
 
     const dailySince=indiaDayStart();
     const dailyCountResult=await db.from('review_generation_events').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).gte('created_at',dailySince);
@@ -178,7 +214,7 @@ Deno.serve(async(req)=>{
     const dailySequence=(dailyCountResult.count??0)+1;
     const strategy:Strategy=dailySequence<=DAILY_KEYWORD_SEQUENCE_CAP&&dailySequence%2===1?'seo_injection':'clean_ambient';
     const injectionKeywords=strategy==='seo_injection'?unique([doctor.clinic_name,primaryArea,patientLocality,...selectedChips,...activeKeywords],10):[];
-    const blockedKeywords=strategy==='clean_ambient'?unique([doctor.clinic_name,doctor.doctor_name,primaryArea,patientLocality,...selectedChips,...activeKeywords],30):[];
+    const blockedKeywords=strategy==='clean_ambient'?unique([doctor.clinic_name,...(!includeDoctorName?[doctor.doctor_name]:[]),primaryArea,patientLocality,...selectedChips,...activeKeywords],30):[];
 
     const structuralPrefix=`STRUCTURAL_LAYOUT_PREFIX_CACHE_V1
 Return raw JSON array only, exactly ${TARGET_COUNT} strings. No markdown, no object wrapper.
@@ -194,7 +230,7 @@ request_window: rolling_24h_scan_sequence=${scanSequence24h}; language_step_acti
 daily_generation_sequence: ${dailySequence}
 language: ${effectiveLanguage==='hinglish'?'Hinglish in Latin script':'English'}
 ${strategyBlock}
-${ratingLayout(rating,effectiveLanguage,strategy==='seo_injection'?serviceKeyword:'service')}
+${ratingLayout(rating,effectiveLanguage,strategy==='seo_injection'?serviceKeyword:'service',text(doctor.doctor_name),includeDoctorName,allowEmoji)}
 patient_inputs: name="${patientName||'inactive'}"; locality="${patientLocality||'inactive'}"; note="${customNotes||'none'}"
 variation: make the ${TARGET_COUNT} drafts feel different in opening, pacing, and detail density.
 Return only valid JSON array.`;
@@ -217,7 +253,7 @@ Return only valid JSON array.`;
       }else{
         const envelope=JSON.parse(responseText) as {candidates?:Array<{content?:{parts?:Array<{text?:string}>}}>};
         const modelText=(envelope.candidates?.[0]?.content?.parts??[]).map(part=>text(part.text)).filter(Boolean).join('\n\n');
-        reviews=parseReviews(modelText,TARGET_COUNT).map(review=>shapeLines(review,rating,effectiveLanguage));
+        reviews=parseReviews(modelText,TARGET_COUNT).map(review=>includeDoctorName?injectDoctorName(review,text(doctor.doctor_name),rating,effectiveLanguage):shapeLines(review,rating,effectiveLanguage));
       }
     }catch(error){
       const message=error instanceof Error?error.message:String(error);
@@ -226,7 +262,7 @@ Return only valid JSON array.`;
     }
 
     if(reviews.length<TARGET_COUNT){
-      reviews=unique([...reviews,...emergencyDrafts(effectiveLanguage,rating)],TARGET_COUNT).map(review=>shapeLines(review,rating,effectiveLanguage));
+      reviews=unique([...reviews,...emergencyDrafts(effectiveLanguage,rating)],TARGET_COUNT).map(review=>includeDoctorName?injectDoctorName(review,text(doctor.doctor_name),rating,effectiveLanguage):shapeLines(review,rating,effectiveLanguage));
     }
     reviews=reviews.slice(0,TARGET_COUNT);
 
@@ -237,6 +273,7 @@ Return only valid JSON array.`;
         reviews=emergencyDrafts(effectiveLanguage,rating);
       }
     }
+    if(includeDoctorName)reviews=reviews.map(review=>injectDoctorName(review,text(doctor.doctor_name),rating,effectiveLanguage));
 
     const metadata={
       policy_version:'state-driven-24h-v1',
@@ -245,6 +282,12 @@ Return only valid JSON array.`;
       scan_sequence_24h:scanSequence24h,
       allow_language_step:allowLanguageStep,
       allow_detail_form:allowDetailForm,
+      is_name_area_prompted:isNameAreaPrompted,
+      is_language_prompted:isLanguagePrompted,
+      is_doctor_name_included:includeDoctorName,
+      doctor_name_injections_24h_before:doctorNameIncluded24h,
+      doctor_name_cap_24h:DOCTOR_NAME_CAP_24H,
+      emoji_enabled:allowEmoji,
       daily_generation_sequence:dailySequence,
       strategy,
       keyword_injection_active:strategy==='seo_injection',
@@ -266,6 +309,21 @@ Return only valid JSON array.`;
     }catch(error){console.error('Generated review persistence threw; returning drafts anyway',error)}
 
     const generatedAt=new Date().toISOString();
+    try{
+      const {error}=await db.from('review_generation_meta').insert({
+        doctor_id:doctor.id,
+        scan_id:scanId||null,
+        fingerprint_hash:fingerprintHash,
+        rating,
+        is_name_area_prompted:isNameAreaPrompted,
+        is_language_prompted:isLanguagePrompted,
+        is_doctor_name_included:includeDoctorName,
+        language:effectiveLanguage,
+        strategy,
+        created_at:generatedAt,
+      });
+      if(error)console.error('Review generation meta insert failed; continuing',error);
+    }catch(error){console.error('Review generation meta insert threw; continuing',error)}
     try{
       const {error}=await db.from('review_generation_events').insert({doctor_id:doctor.id,fingerprint_hash:fingerprintHash,personality:strategy,location_verified:locationVerified,distance_meters:distanceMeters,created_at:generatedAt});
       if(error)console.error('Generation event audit insert failed; continuing',error);
