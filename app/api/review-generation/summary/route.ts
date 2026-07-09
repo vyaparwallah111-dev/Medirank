@@ -25,6 +25,7 @@ export async function GET() {
     const doctor = await getCurrentDoctor();
     const db = createAdminClient();
     if (!db) return NextResponse.json({ ok: false, error: "Analytics unavailable." }, { status: 503 });
+    if (!doctor?.id) return NextResponse.json({ ok: false, error: "Clinic profile unavailable." }, { status: 409 });
     const window = getOperationalWindow();
     const [language, nameArea, doctorName, total] = await Promise.all([
       countFlag(db, doctor.id, "is_language_prompted", window.startIso, window.endIso),

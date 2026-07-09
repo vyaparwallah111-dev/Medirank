@@ -4,6 +4,7 @@ export const fetchCache = "force-no-store";
 
 import Link from "next/link";
 import { unstable_noStore as noStore } from "next/cache";
+import { redirect } from "next/navigation";
 import { ArrowUpRight, ClipboardCheck, LockKeyhole, QrCode, ScanLine, Send, Star } from "lucide-react";
 import { displayDoctorName, getAuthenticatedUser, getCurrentDoctor } from "@/lib/dashboard";
 import { DirectLinkShare } from "@/components/direct-link-share";
@@ -96,7 +97,8 @@ export default async function Dashboard() {
   noStore();
   const doctor = await getCurrentDoctor();
   const { supabase, user } = await getAuthenticatedUser();
-  if (doctor.auth_user_id !== user.id) throw new Error("Forbidden");
+  if (!doctor?.id || !user?.id) redirect("/onboarding");
+  if (doctor?.auth_user_id !== user?.id) throw new Error("Forbidden");
   await syncAnalyticsEventsFromScans(doctor.id);
   const analyticsDb = createAdminClient() || supabase;
   const trendSince=new Date(Date.now()-56*24*60*60*1000).toISOString();

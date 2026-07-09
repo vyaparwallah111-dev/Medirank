@@ -11,7 +11,7 @@ export default async function AdminDashboardPage(){
   const sessionClient=createClient();
   if(!sessionClient)redirect('/login');
   const {data:{user}}=await sessionClient.auth.getUser();
-  if(!user)redirect('/login');
+  if(!user?.id)redirect('/login');
 
   // This check deliberately uses the authenticated user's RLS-scoped client.
   // The service-role client is never created until authorization succeeds.
@@ -31,11 +31,11 @@ export default async function AdminDashboardPage(){
     if(data.users.length<1000)break;
   }
   const doctors:AdminDoctor[]=(rows||[]).map(row=>({
-    id:row.id,clinic_name:row.clinic_name,doctor_name:row.doctor_name,email:emails.get(row.auth_user_id)||'',phone:row.phone,
+    id:row.id,clinic_name:row.clinic_name,doctor_name:row.doctor_name,email:emails.get(row.auth_user_id||'')||'',phone:row.phone,
     subscription_tier:(row.subscription_tier==='growth'||row.subscription_tier==='premium'?row.subscription_tier:'starter'),
     total_scans_used:Number(row.total_scans_used)||0,is_active:row.is_active!==false,is_admin:row.is_admin===true,
     plan_started_at:row.plan_started_at,plan_expires_at:row.plan_expires_at,
   }));
   const metrics=doctors.reduce((result,doctor)=>{result.total++;result[doctor.subscription_tier]++;result.scans+=doctor.total_scans_used;return result},{total:0,starter:0,growth:0,premium:0,scans:0});
-  return <AdminDashboard doctors={doctors} metrics={metrics} adminEmail={user.email||'Administrator'}/>;
+  return <AdminDashboard doctors={doctors} metrics={metrics} adminEmail={user?.email||'Administrator'}/>;
 }

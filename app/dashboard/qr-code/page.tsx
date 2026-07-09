@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
 import { LockKeyhole, QrCode } from 'lucide-react';
 import { getAuthenticatedUser, getCurrentDoctor } from '@/lib/dashboard';
 import { QRDownload } from '@/components/qr-download';
@@ -9,6 +10,7 @@ export const dynamic = 'force-dynamic';
 export default async function QRCodePage() {
   const doctor = await getCurrentDoctor();
   const { supabase } = await getAuthenticatedUser();
+  if (!doctor?.id) redirect('/onboarding');
   const { count, error: qrError } = await supabase.from('qr_codes').select('*', { count: 'exact', head: true }).eq('doctor_id', doctor.id);
   const qrCount = count ?? 0;
   const subscriptionTier = doctor.subscription_tier?.trim().toLowerCase() || 'starter';
