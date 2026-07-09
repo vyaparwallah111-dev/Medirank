@@ -15,8 +15,6 @@ type TrendPoint = { label: string; scans: number; posts: number };
 type DashboardEvent = { id: string; created_at: string; event_type: "scan" | "copy" | "click_maps" };
 type TrendAggregate = { period: "daily" | "weekly"; bucket_start: string; scans: number | string; posts: number | string };
 type LegacyScan = { id: string; created_at: string; review_copied: boolean | null; redirected_to_gmb: boolean | null };
-type GenerationFlag = "is_name_area_prompted" | "is_language_prompted" | "is_doctor_name_included";
-type OperationalWindow={startIso:string;endIso:string};
 
 function TrendChart({title,subtitle,points}:{title:string;subtitle:string;points:TrendPoint[]}) {
   const max=Math.max(1,...points.flatMap(point=>[point.scans,point.posts]));
@@ -78,25 +76,6 @@ async function syncAnalyticsEventsFromScans(doctorId:string){
   }
 }
 
-function getOperationalWindow(now=new Date()):OperationalWindow{
-  const istOffsetMs=330*60*1000;
-  const istNow=new Date(now.getTime()+istOffsetMs);
-  const year=istNow.getUTCFullYear(),month=istNow.getUTCMonth(),date=istNow.getUTCDate();
-  const start=new Date(Date.UTC(year,month,date,9,0,0)-istOffsetMs);
-  const end=new Date(Date.UTC(year,month,date,21,0,0)-istOffsetMs);
-  return {startIso:start.toISOString(),endIso:end.toISOString()};
-}
-
-async function countGenerationFlag(db: ReturnType<typeof createAdminClient>, doctorId:string, flag:GenerationFlag, since:string, until:string){
-  if(!db)return 0;
-  const {count,error}=await db.from("review_generation_meta").select("*",{count:"exact",head:true}).eq("doctor_id",doctorId).eq(flag,true).gte("created_at",since).lt("created_at",until);
-  if(error){
-    console.error("Dashboard generation flag count failed:",flag,error.message);
-    return 0;
-  }
-  return count??0;
-}
-
 export default async function Dashboard() {
   noStore();
   const doctor = await getCurrentDoctor();
@@ -106,7 +85,6 @@ export default async function Dashboard() {
   await syncAnalyticsEventsFromScans(doctor.id);
   const analyticsDb = createAdminClient() || supabase;
   const trendSince=new Date(Date.now()-56*24*60*60*1000).toISOString();
-  const generationWindow=getOperationalWindow();
   const [scansResult, copiedResult, postedResult, recentEventsResult, trendResult, legacyScansResult, legacyCopiedResult, legacyPostedResult, legacyTrendResult] = await Promise.all([
     analyticsDb.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "scan"),
     analyticsDb.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "copy"),
@@ -136,16 +114,6 @@ export default async function Dashboard() {
   const today = new Intl.DateTimeFormat("en-IN", { weekday: "long", day: "numeric", month: "long" }).format(new Date()).toUpperCase();
   const isStarter = (doctor.subscription_tier?.trim().toLowerCase() || "starter") === "starter";
   const isGrowth = doctor.subscription_tier?.trim().toLowerCase() === "growth";
-  const [languageTriggers,nameAreaPrompts,doctorNameInjections]=await Promise.all([
-    countGenerationFlag(analyticsDb,doctor.id,"is_language_prompted",generationWindow.startIso,generationWindow.endIso),
-    countGenerationFlag(analyticsDb,doctor.id,"is_name_area_prompted",generationWindow.startIso,generationWindow.endIso),
-    countGenerationFlag(analyticsDb,doctor.id,"is_doctor_name_included",generationWindow.startIso,generationWindow.endIso),
-  ]);
-  const generationUsage=[
-    ["Language Triggers",languageTriggers,5],
-    ["Name/Area Prompts",nameAreaPrompts,5],
-    ["Dr Name Injections",doctorNameInjections,5],
-  ] as const;
 
   const heading = <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm font-semibold text-brand">{today}</p><h1 className="mt-1 text-3xl font-extrabold">Good morning, Dr. {displayDoctorName(doctor.doctor_name)}</h1><p className="mt-1 text-slate-500">{isStarter ? "Your Starter plan usage at a glance." : "Here’s what’s happening with your patient reviews."}</p></div><Link href={`/r/${doctor.slug}`} className="btn-primary"><QrCode size={18} />Open patient page</Link></div>;
 
@@ -158,7 +126,6 @@ export default async function Dashboard() {
         <p className="mt-5 text-3xl font-extrabold">Total Scans: {scans.toLocaleString()} / 20</p>
         <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-brand" style={{ width: `${Math.min(100, (scans / 20) * 100)}%` }} /></div>
       </div>
-      <div className="mt-5 grid gap-3 sm:grid-cols-3">{generationUsage.map(([label,value,cap])=><div key={label} className="card p-4"><p className="text-xs font-bold uppercase tracking-[.12em] text-slate-400">{label}</p><p className="mt-2 text-2xl font-extrabold tabular-nums">{value}/{cap}</p><div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-brand" style={{width:`${Math.min(100,(value/cap)*100)}%`}}/></div></div>)}</div>
       <div className="relative mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">
         <div aria-hidden="true" className="pointer-events-none grid gap-5 p-6 blur-[5px] sm:grid-cols-3"><div className="h-32 rounded-xl bg-gradient-to-br from-blue-100 to-slate-100"/><div className="h-32 rounded-xl bg-gradient-to-br from-emerald-100 to-slate-100"/><div className="h-32 rounded-xl bg-gradient-to-br from-orange-100 to-slate-100"/><div className="h-56 rounded-xl bg-slate-100 sm:col-span-3"/></div>
         <div className="absolute inset-0 grid place-items-center bg-white/45 p-5 backdrop-blur-[2px]"><div className="max-w-sm rounded-2xl border border-blue-100 bg-white p-6 text-center shadow-soft"><LockKeyhole className="mx-auto text-brand" size={30}/><h2 className="mt-4 text-xl font-extrabold">Upgrade to Unlock Advanced Analytics</h2><p className="mt-2 text-sm leading-6 text-slate-500">Access conversion charts, time-series trends, and review sentiment insights.</p><Link href="/pricing" className="btn-primary mt-5 min-h-12 w-full">View Growth plans</Link></div></div>
@@ -172,7 +139,6 @@ export default async function Dashboard() {
       <DashboardAutoRefresh />
       {heading}
       <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{stats.map(([Icon, label, value]) => <div className="card p-5 transition-shadow duration-300 hover:shadow-md" key={label}><span className="grid h-10 w-10 place-items-center rounded-xl bg-blue-50 text-brand"><Icon size={20}/></span><p className="mt-5 min-h-9 text-3xl font-extrabold tabular-nums">{value}</p><p className="mt-1 text-sm text-slate-500">{label}</p></div>)}</div>
-      <div className="mt-5 grid gap-3 sm:grid-cols-3">{generationUsage.map(([label,value,cap])=><div key={label} className="card p-4"><p className="text-xs font-bold uppercase tracking-[.12em] text-slate-400">{label}</p><p className="mt-2 text-2xl font-extrabold tabular-nums">{value}/{cap}</p><div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-brand" style={{width:`${Math.min(100,(value/cap)*100)}%`}}/></div></div>)}</div>
       <div className="mt-5 grid gap-5 xl:grid-cols-2"><TrendChart title="Daily trend" subtitle="Last 14 days" points={dailyPoints}/><TrendChart title="Weekly trend" subtitle="Last 8 weeks" points={weeklyPoints}/></div>
       <div className="mt-5 grid gap-5 xl:grid-cols-[1.45fr_.55fr]">
         <div className="card p-6"><h2 className="font-bold">Review recovery quick action</h2><p className="mt-2 text-sm leading-6 text-slate-500">Copy a ready-to-send WhatsApp message with your clinic's direct review link and share it with past patients.</p>{isGrowth?<DirectLinkShare clinic={doctor.clinic_name} slug={doctor.slug} appOrigin={process.env.NEXT_PUBLIC_APP_URL||''}/>:<Link href="/pricing" className="btn-secondary mt-4 w-full">Unlock with Growth</Link>}</div>

@@ -5,6 +5,22 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { AdminDashboard, type AdminDoctor } from './admin-dashboard';
 
 export const dynamic='force-dynamic';
+type GenerationFlag='is_name_area_prompted'|'is_language_prompted'|'is_doctor_name_included';
+
+function getOperationalWindow(now=new Date()){
+  const istOffsetMs=330*60*1000;
+  const istNow=new Date(now.getTime()+istOffsetMs);
+  const year=istNow.getUTCFullYear(),month=istNow.getUTCMonth(),date=istNow.getUTCDate();
+  const start=new Date(Date.UTC(year,month,date,9,0,0)-istOffsetMs);
+  const end=new Date(Date.UTC(year,month,date,21,0,0)-istOffsetMs);
+  return {startIso:start.toISOString(),endIso:end.toISOString()};
+}
+
+async function countGenerationFlag(db:NonNullable<ReturnType<typeof createAdminClient>>,flag:GenerationFlag,since:string,until:string){
+  const {count,error}=await db.from('review_generation_meta').select('*',{count:'exact',head:true}).eq(flag,true).gte('created_at',since).lt('created_at',until);
+  if(error){console.error('Admin generation metric lookup failed:',flag,error.message);return 0}
+  return count??0;
+}
 
 export default async function AdminDashboardPage(){
   noStore();
@@ -37,5 +53,15 @@ export default async function AdminDashboardPage(){
     plan_started_at:row.plan_started_at,plan_expires_at:row.plan_expires_at,
   }));
   const metrics=doctors.reduce((result,doctor)=>{result.total++;result[doctor.subscription_tier]++;result.scans+=doctor.total_scans_used;return result},{total:0,starter:0,growth:0,premium:0,scans:0});
-  return <AdminDashboard doctors={doctors} metrics={metrics} adminEmail={user?.email||'Administrator'}/>;
+  const generationWindow=getOperationalWindow();
+  const [languageTriggers,nameAreaPrompts,doctorNameInjections]=await Promise.all([
+    countGenerationFlag(admin,'is_language_prompted',generationWindow.startIso,generationWindow.endIso),
+    countGenerationFlag(admin,'is_name_area_prompted',generationWindow.startIso,generationWindow.endIso),
+    countGenerationFlag(admin,'is_doctor_name_included',generationWindow.startIso,generationWindow.endIso),
+  ]);
+  return <AdminDashboard doctors={doctors} metrics={metrics} adminEmail={user?.email||'Administrator'} isSuperAdmin={profile?.is_admin===true} generationUsage={[
+    ['Language Triggers',languageTriggers,5],
+    ['Name/Area Prompts',nameAreaPrompts,5],
+    ['Dr Name Injections',doctorNameInjections,5],
+  ]}/>;
 }
