@@ -64,21 +64,11 @@ export default async function PatientPage({params}:PageProps){
       console.error('Patient page scan session insert failed:',scanResult.reason);
     }
     const operationalWindow=getOperationalWindow();
-    const {count:operationalScanCount,error:routingCountError}=operationalWindow.isActive
-      ? await supabase
-        .from('analytics_events')
-        .select('*',{count:'exact',head:true})
-        .eq('doctor_id',doctor.id)
-        .eq('event_type','scan')
-        .gte('created_at',operationalWindow.startIso)
-        .lt('created_at',operationalWindow.endIso)
-      : {count:0,error:null};
-    if(routingCountError)console.error('Patient page operational routing lookup failed:',routingCountError.message);
-    const operationalScanSequence=Math.max(1,operationalScanCount??1);
+    const showPersonalizedFlow=operationalWindow.isActive&&Math.random()<0.25;
     const routingState={
-      operationalScanSequence,
-      allowLanguageStep:operationalWindow.isActive&&operationalScanSequence<=5,
-      allowDetailForm:operationalWindow.isActive&&operationalScanSequence<=5,
+      operationalScanSequence:0,
+      allowLanguageStep:showPersonalizedFlow,
+      allowDetailForm:showPersonalizedFlow,
     };
     const treatmentKeywords=keywords.filter(item=>item.category==='treatment').map(item=>item.keyword).filter(Boolean);
     const topServices=Array.from(new Set<string>([...knowledgeBase.top_services,...treatmentKeywords]));

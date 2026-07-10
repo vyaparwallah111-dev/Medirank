@@ -11,9 +11,9 @@ const GEMINI_MODEL='gemini-2.5-flash';
 const HELPER_MODEL='gemini-3.1-flash-lite';
 const GEMINI_TIMEOUT_MS=7_000;
 const TARGET_COUNT=4;
-const ROUTING_CAP_DAILY=5;
 const DOCTOR_NAME_CAP_DAILY=5;
 const DAILY_KEYWORD_SEQUENCE_CAP=10;
+const PERSONALIZED_FLOW_PROBABILITY=0.25;
 
 type KB={area_name?:unknown;city_name?:unknown;top_services?:unknown};
 type Language='english'|'hinglish';
@@ -50,6 +50,29 @@ const sanitizeText=(value:unknown,maxLength:number)=>{
 const list=(value:unknown,maxLength=80)=>Array.isArray(value)?value.filter((item):item is string=>typeof item==='string'&&!!item.trim()).map(item=>sanitizeText(item,maxLength)).filter(Boolean):[];
 const unique=(items:string[],max=20)=>Array.from(new Set(items.map(item=>item.trim()).filter(Boolean))).slice(0,max);
 const normalize=(value:string)=>value.toLowerCase().replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim();
+const titleCaseHuman=(value:string)=>value.split(/\s+/).filter(Boolean).map(part=>`${part[0].toUpperCase()}${part.slice(1).toLowerCase()}`).join(' ');
+const splitKnownCompound=(value:string,terms:string[])=>{
+  const lower=value.toLowerCase();
+  for(const term of terms){
+    if(lower.length>term.length+2&&lower.endsWith(term)){
+      const prefix=lower.slice(0,-term.length);
+      return `${prefix} ${term}`;
+    }
+  }
+  return value;
+};
+const normalizeHumanInput=(value:unknown,maxLength:number,kind:'name'|'locality')=>{
+  const compact=sanitizeText(value,maxLength)
+    .replace(/[-_./]+/g,' ')
+    .replace(/([a-z])([A-Z])/g,'$1 $2')
+    .replace(/\s+/g,' ')
+    .trim();
+  if(!compact)return '';
+  const knownNameTerms=['jha','kumar','singh','yadav','gupta','sharma','verma','prasad','khan','ali','ahmed','ansari','raj','rani'];
+  const knownLocalityTerms=['sharif','nagar','pur','pura','ganj','bazar','bazaar','colony','road','chowk','market','vihar','bagh'];
+  const spaced=compact.includes(' ')?compact:splitKnownCompound(compact,kind==='name'?knownNameTerms:knownLocalityTerms);
+  return titleCaseHuman(spaced).slice(0,maxLength);
+};
 const jsonList=(value:unknown):string[]=>{
   if(Array.isArray(value))return list(value);
   if(typeof value==='string')return value.split(',').map(item=>item.trim()).filter(Boolean);
@@ -299,22 +322,22 @@ Deno.serve(async(req)=>{
     if(hasPatientLocation&&hasClinicLocation){distanceMeters=Math.round(haversine(patientLatitude,patientLongitude,Number(doctor.latitude),Number(doctor.longitude)));locationVerified=distanceMeters<=500}
 
     const opWindow=operationalWindow();
-    const scanCountResult=opWindow.isActive
-      ? await db.from('analytics_events').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).eq('event_type','scan').gte('created_at',opWindow.startIso).lt('created_at',opWindow.endIso)
-      : {count:0,error:null};
-    if(scanCountResult.error)console.error('Operational scan routing lookup failed; defaulting to express route',scanCountResult.error);
-    const operationalScanSequence=Math.max(1,scanCountResult.count??1);
-    const allowLanguageStep=opWindow.isActive&&operationalScanSequence<=ROUTING_CAP_DAILY;
-    const allowDetailForm=opWindow.isActive&&operationalScanSequence<=ROUTING_CAP_DAILY;
-    if(body.precheck_only===true)return reply({allowed:true,location_verified:locationVerified,distance_meters:distanceMeters,routing:{operational_scan_sequence:operationalScanSequence,operational_window_active:opWindow.isActive,operational_window_start:opWindow.startIso,operational_window_end:opWindow.endIso,allow_language_step:allowLanguageStep,allow_detail_form:allowDetailForm}});
+    const suppliedPatientName=normalizeHumanInput(body.patient_name,60,'name');
+    const suppliedPatientLocality=normalizeHumanInput(body.patient_locality,60,'locality');
+    const hasSubmittedPersonalDetails=!!(suppliedPatientName||suppliedPatientLocality);
+    const personalizedFlowRoll=opWindow.isActive&&Math.random()<PERSONALIZED_FLOW_PROBABILITY;
+    const operationalScanSequence=0;
+    const allowLanguageStep=hasSubmittedPersonalDetails||personalizedFlowRoll;
+    const allowDetailForm=hasSubmittedPersonalDetails||personalizedFlowRoll;
+    if(body.precheck_only===true)return reply({allowed:true,location_verified:locationVerified,distance_meters:distanceMeters,routing:{operational_scan_sequence:operationalScanSequence,operational_window_active:opWindow.isActive,operational_window_start:opWindow.startIso,operational_window_end:opWindow.endIso,personalized_flow_probability:PERSONALIZED_FLOW_PROBABILITY,personalized_flow_roll:personalizedFlowRoll,allow_language_step:allowLanguageStep,allow_detail_form:allowDetailForm}});
 
     const effectiveLanguage:Language=allowLanguageStep&&body.language==='hinglish'?'hinglish':'english';
     fallbackLanguage=effectiveLanguage;
     const rating=Math.min(5,Math.max(1,Math.round(Number(body.rating)||5)));
     const kb=(doctor.knowledge_base&&typeof doctor.knowledge_base==='object'?doctor.knowledge_base:{}) as KB;
     const primaryArea=sanitizeText(body.primary_area,80)||sanitizeText(kb.area_name,80)||sanitizeText(doctor.city,80);
-    const patientName=allowDetailForm?sanitizeText(body.patient_name,60):'';
-    const patientLocality=allowDetailForm?sanitizeText(body.patient_locality,60):'';
+    const patientName=allowDetailForm?suppliedPatientName:'';
+    const patientLocality=allowDetailForm?suppliedPatientLocality:'';
     const customNotes=sanitizeText(body.custom_notes,240);
 
     const {data:keywordRows,error:keywordError}=await db.from('doctor_keywords').select('keyword,category').eq('doctor_id',doctor.id).order('created_at');
@@ -361,7 +384,7 @@ Deno.serve(async(req)=>{
     const casingProfile=randomItem(casingProfiles);
     const ownerResponseHookState={enabled:false,status:'reserved'};
 
-    const structuralPrefix=`JSON only: return exactly ${TARGET_COUNT} objects [{"review":"..."}]. No markdown or wrapper. Block phrases: "sharing my genuine review", "overall it was good", "highly satisfied". No fake outcomes, diagnosis, discounts, legal claims, staff names, or templated closings. Preserve requested line count.`;
+    const structuralPrefix=`JSON only: return exactly ${TARGET_COUNT} objects [{"review":"..."}]. No markdown or wrapper. Block phrases: "sharing my genuine review", "overall it was good", "highly satisfied". No fake outcomes, diagnosis, discounts, legal claims, staff names, or templated closings. Preserve requested line count. If patient_name and locality are passed, you are FORCED to incorporate them naturally as character variables inside the generated output. Never truncate or omit them under any structural length condition.`;
     const strategyBlock=keywordInjectionActive
       ? `keywords=${JSON.stringify(injectionKeywords)}; use naturally, no stuffing, max 10 assets.`
       : `keywords=none; ambient only. Avoid exact assets ${JSON.stringify(blockedKeywords)}.`;
@@ -437,6 +460,8 @@ complaint_safety=${rating<=2?'never block, filter, soften, or praise-convert low
       operational_window_start:opWindow.startIso,
       operational_window_end:opWindow.endIso,
       operational_scan_sequence:operationalScanSequence,
+      personalized_flow_probability:PERSONALIZED_FLOW_PROBABILITY,
+      personalized_flow_roll:personalizedFlowRoll,
       allow_language_step:allowLanguageStep,
       allow_detail_form:allowDetailForm,
       is_name_area_prompted:isNameAreaPrompted,
