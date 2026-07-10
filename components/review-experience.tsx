@@ -35,7 +35,7 @@ const copy = {
     chooseLanguage: "Choose your language",
     languageHint: "Select the language you feel most comfortable with.",
     detailTitle: "Add visit details",
-    detailHint: "Pick at least 2 highlights. Name and locality are optional.",
+    detailHint: "Name and locality are required before choosing highlights.",
     name: "Name",
     locality: "Locality",
     namePlaceholder: "Your name",
@@ -43,6 +43,8 @@ const copy = {
     chipsTitle: "Pick visit highlights",
     chipsHint: "These options are managed by the clinic.",
     minChips: "Select at least 2 highlights to continue.",
+    ratingRequired: "Please select your star rating first.",
+    detailsRequired: "Please enter your name and locality to unlock visit highlights.",
     generating: "Writing your drafts...",
     draftsTitle: "Choose your favorite draft",
     copyReview: "Copy Review",
@@ -57,7 +59,7 @@ const copy = {
     chooseLanguage: "Apni language chunein",
     languageHint: "Jis language mein aap comfortable hain, use select karein.",
     detailTitle: "Visit details add karein",
-    detailHint: "Kam se kam 2 highlights select karein. Name aur locality optional hain.",
+    detailHint: "Highlights choose karne se pehle name aur locality required hain.",
     name: "Name",
     locality: "Locality",
     namePlaceholder: "Aapka name",
@@ -65,6 +67,8 @@ const copy = {
     chipsTitle: "Visit highlights chunein",
     chipsHint: "Ye options clinic dashboard se aate hain.",
     minChips: "Aage badhne ke liye kam se kam 2 highlights select karein.",
+    ratingRequired: "Pehle apni star rating select karein.",
+    detailsRequired: "Visit highlights unlock karne ke liye name aur locality enter karein.",
     generating: "Aapke drafts ban rahe hain...",
     draftsTitle: "Apna favorite draft chunein",
     copyReview: "Review Copy Karein",
@@ -208,13 +212,14 @@ export function ReviewExperience({
   }, [showThankYou]);
 
   useEffect(() => {
-    if (!currentLanguage || loading || selectedChips.length !== MIN_DETAIL_CHIPS) return;
+    const detailReady = !allowDetailForm || (sanitizeText(patientName, 60) && sanitizeText(patientLocality, 60));
+    if (!currentLanguage || loading || !selectedRating || !detailReady || selectedChips.length !== MIN_DETAIL_CHIPS) return;
     const generationKey = `${selectedChips.join("|")}:${selectedRating ?? "default"}`;
     if (autoGenerationKeyRef.current === generationKey) return;
     autoGenerationKeyRef.current = generationKey;
     scrollDraftsIntoView();
-    void generate(selectedRating ?? 5);
-  }, [currentLanguage, loading, selectedChips, selectedRating]);
+    void generate(selectedRating);
+  }, [allowDetailForm, currentLanguage, loading, patientLocality, patientName, selectedChips, selectedRating]);
 
   function rememberScanId(nextScanId?: string) {
     if (!nextScanId) return;
@@ -223,18 +228,40 @@ export function ReviewExperience({
   }
 
   function toggleChip(value: string) {
+    const message = getStepperValidationMessage();
+    if (message) {
+      setValidationError(message);
+      return;
+    }
     setValidationError("");
     const safeValue = sanitizeText(value, 80);
     if (!safeValue) return;
     setSelectedChips((current) => current.includes(safeValue) ? current.filter((item) => item !== safeValue) : [...current, safeValue].slice(0, 5));
   }
 
+  function getStepperValidationMessage() {
+    if (!selectedRating) return t.ratingRequired;
+    if (allowDetailForm && (!sanitizeText(patientName, 60) || !sanitizeText(patientLocality, 60))) return t.detailsRequired;
+    return "";
+  }
+
+  function selectRating(value: number) {
+    setHoverRating(null);
+    setSelectedRating(value);
+    setValidationError("");
+  }
+
   function scrollDraftsIntoView() {
     window.setTimeout(() => draftsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
   }
 
-  async function generate(ratingOverride: number = selectedRating ?? 5) {
+  async function generate(ratingOverride: number = selectedRating ?? 0) {
     if (!currentLanguage || loading) return;
+    const stepperError = getStepperValidationMessage();
+    if (stepperError || !ratingOverride) {
+      setValidationError(stepperError || t.ratingRequired);
+      return;
+    }
     const chips = unique(selectedChips.map((chip) => sanitizeText(chip, 80))).slice(0, 5);
     if (chips.length < MIN_DETAIL_CHIPS) {
       setValidationError(t.minChips);
@@ -338,25 +365,26 @@ export function ReviewExperience({
   const BrandHeader = () => <a href="/" className="relative z-50 mx-auto flex min-h-12 w-full max-w-xl flex-nowrap items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-2xl border border-slate-200 bg-white px-2 text-xs font-black shadow-sm sm:min-h-14 sm:px-3 sm:text-base"><span className="text-[#0A4C95]">MediRank</span><span className="text-slate-700">by</span><span className="text-[#0A4C95]">Vyapar</span><span className="text-[#F37021]">Wallah</span><ExternalLink size={14} className="ml-0.5 shrink-0 text-slate-500" /></a>;
   const BrandFooter = () => <footer className="relative z-50 px-2 py-5 text-center text-xs font-black text-slate-900 sm:px-3 sm:py-6 sm:text-sm"><a href="https://www.vyaparwallah.com/digital-marketing-for-doctors" target="_blank" rel="noreferrer" className="inline-flex min-h-11 max-w-full items-center gap-1 overflow-hidden rounded-xl bg-white px-3 shadow-sm ring-1 ring-slate-200 sm:min-h-12 sm:px-4"><span>Powered by</span><span className="text-[#0A4C95]">Vyapar</span><span className="text-[#F37021]">Wallah</span></a></footer>;
   const GoogleStar = ({ active, size = 34 }: { active: boolean; size?: number }) => <svg aria-hidden="true" viewBox="0 0 24 24" width={size} height={size} className="block transition-transform duration-75 ease-out group-active:scale-90"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" fill={active ? "#F4B400" : "transparent"} stroke={active ? "#F4B400" : "#B8C0CC"} strokeWidth="1.8" strokeLinejoin="round" /></svg>;
+  const stepperWarning = getStepperValidationMessage();
+  const detailsUnlocked = !stepperWarning;
 
   if (!currentLanguage) return <main style={style} className="flex min-h-[100dvh] flex-col bg-[var(--patient-bg)] px-2 pt-2 text-slate-950 sm:px-5 sm:pt-5"><BrandHeader /><div className="grid flex-1 place-items-center py-5 sm:py-8"><section className="w-full max-w-md rounded-3xl border border-blue-100 bg-white p-5 text-center shadow-2xl sm:rounded-[2rem] sm:p-8"><span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-[#0A4C95] text-xl font-black text-white sm:h-16 sm:w-16 sm:text-2xl">Aa</span><p className="mt-4 text-xs font-black uppercase tracking-[.16em] text-[#0A4C95] sm:mt-5 sm:tracking-[.2em]">MediRank</p><h1 className="mt-2 text-2xl font-black sm:text-3xl">{t.chooseLanguage}</h1><p className="mt-2 text-sm font-semibold leading-6 text-slate-700 sm:mt-3 sm:text-base">{t.languageHint}</p><div className="mt-6 grid gap-2.5 sm:mt-7 sm:gap-3"><button type="button" onClick={() => setCurrentLanguage("english")} className="min-h-14 rounded-2xl border-2 border-[#0A4C95] bg-white text-base font-black text-slate-950 shadow-md transition active:scale-[.98] sm:min-h-16 sm:text-lg">English</button><button type="button" onClick={() => setCurrentLanguage("hinglish")} className="min-h-14 rounded-2xl bg-[#0A4C95] text-base font-black text-white shadow-lg transition active:scale-[.98] sm:min-h-16 sm:text-lg">Hinglish</button></div></section></div><BrandFooter /></main>;
 
-  return <main style={style} className="min-h-[100dvh] overflow-x-hidden bg-[var(--patient-bg)] pb-10 text-slate-950 sm:pb-14">
-    <div className="pointer-events-none fixed inset-0 z-20 bg-black/40 backdrop-blur-sm" aria-hidden="true" />
+  return <main style={style} className="min-h-[100dvh] overflow-x-hidden bg-white pb-10 text-slate-950 sm:pb-14">
     <div className="relative z-50 px-2 pt-2 sm:px-5 sm:pt-5"><BrandHeader /></div>
-    <div className="mx-auto w-full max-w-xl space-y-5 px-2 pt-3 sm:space-y-8 sm:px-5 sm:pt-4">
-      <header className="relative z-30 rounded-3xl bg-white px-3 py-5 text-center shadow-xl sm:px-4 sm:py-6">{doctor.logo_url ? <img src={doctor.logo_url} alt={clinicName} className="mx-auto h-14 w-14 rounded-2xl object-contain ring-1 ring-slate-200 sm:h-16 sm:w-16" /> : <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-[#0A4C95] text-lg font-black text-white sm:h-16 sm:w-16 sm:text-xl">{initials}</span>}<p className="mt-3 break-words text-xs font-black text-[#0A4C95] sm:text-sm">{clinicName}</p><h1 className="mt-2 text-xl font-black leading-snug sm:text-2xl sm:leading-relaxed">{visitQuestion}</h1>{allowLanguageStep && <button type="button" onClick={() => setCurrentLanguage(null)} className="mt-3 min-h-10 px-3 text-sm font-bold text-[#0A4C95] sm:mt-4 sm:min-h-12">{currentLanguage === "english" ? "English" : "Hinglish"}</button>}</header>
+    <div className="mx-auto w-full max-w-xl space-y-5 px-3 pt-3 sm:space-y-8 sm:px-5 sm:pt-4">
+      <header className="relative z-30 bg-white py-5 text-center sm:py-6">{doctor.logo_url ? <img src={doctor.logo_url} alt={clinicName} className="mx-auto h-14 w-14 rounded-2xl object-contain ring-1 ring-slate-200 sm:h-16 sm:w-16" /> : <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-[#0A4C95] text-lg font-black text-white sm:h-16 sm:w-16 sm:text-xl">{initials}</span>}<p className="mt-3 break-words text-xs font-black text-[#0A4C95] sm:text-sm">{clinicName}</p><h1 className="mt-2 text-xl font-black leading-snug sm:text-2xl sm:leading-relaxed">{visitQuestion}</h1>{allowLanguageStep && <button type="button" onClick={() => setCurrentLanguage(null)} className="mt-3 min-h-10 px-3 text-sm font-bold text-[#0A4C95] sm:mt-4 sm:min-h-12">{currentLanguage === "english" ? "English" : "Hinglish"}</button>}</header>
 
-      <section className="relative z-30 rounded-3xl border border-blue-100 bg-white p-4 shadow-xl sm:p-6"><div className="text-center"><p className="text-xs font-black uppercase tracking-[.14em] text-[#0A4C95] sm:tracking-[.18em]">Tap your rating</p><div className="mt-3 flex justify-center gap-1.5 sm:mt-4 sm:gap-2" role="radiogroup" aria-label="Select star rating" onMouseLeave={() => setHoverRating(null)}>{Array.from({ length: 5 }).map((_, index) => { const value = index + 1; const previewRating = hoverRating ?? selectedRating ?? 0; return <button key={value} type="button" role="radio" aria-checked={selectedRating === value} onMouseEnter={() => setHoverRating(value)} onFocus={() => setHoverRating(value)} onBlur={() => setHoverRating(null)} onClick={() => setSelectedRating(value)} className="group grid h-10 w-10 place-items-center rounded-full transition-colors duration-75 hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4285F4] active:bg-slate-200 sm:h-11 sm:w-11"><GoogleStar active={value <= previewRating} /></button>; })}</div><p className="mt-2 min-h-5 text-sm font-extrabold text-slate-700">{selectedRating ? selectedRating >= 5 ? "Loved it" : selectedRating === 4 ? "Good, with small feedback" : "Needs improvement" : "Select your rating"}</p></div></section>
+      <section className="relative z-30 bg-white py-4 sm:py-6"><div className="text-center"><p className="text-xs font-black uppercase tracking-[.14em] text-[#0A4C95] sm:tracking-[.18em]">Tap your rating <span className="text-red-600">*</span></p><div className="mt-3 flex justify-center gap-1.5 sm:mt-4 sm:gap-2" role="radiogroup" aria-label="Select star rating" onMouseLeave={() => setHoverRating(null)}>{Array.from({ length: 5 }).map((_, index) => { const value = index + 1; const previewRating = hoverRating ?? selectedRating ?? 0; return <button key={value} type="button" role="radio" aria-checked={selectedRating === value} onMouseEnter={() => { if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) setHoverRating(value); }} onFocus={() => setHoverRating(value)} onBlur={() => setHoverRating(null)} onTouchStart={(event) => { event.preventDefault(); selectRating(value); }} onClick={() => selectRating(value)} className="group grid h-10 w-10 touch-manipulation place-items-center rounded-full transition-colors duration-75 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4285F4] active:bg-slate-200 sm:h-11 sm:w-11 sm:hover:bg-slate-100"><GoogleStar active={value <= previewRating} /></button>; })}</div><p className="mt-2 min-h-5 text-sm font-extrabold text-slate-700">{selectedRating ? selectedRating >= 5 ? "Loved it" : selectedRating === 4 ? "Good, with small feedback" : "Needs improvement" : "Select your rating"}</p></div></section>
 
-      <section className="relative z-30 rounded-3xl border border-blue-100 bg-white p-4 shadow-xl sm:p-6">
+      <section className="relative z-30 bg-white py-4 sm:py-6">
         {allowDetailForm && <><h2 className="text-lg font-black sm:text-xl">{t.detailTitle}</h2><p className="mt-1 text-sm font-semibold leading-5 text-slate-600">{t.detailHint}</p><div className="mt-4 grid gap-3 sm:mt-5 sm:grid-cols-2 sm:gap-4"><div><label className="label">{t.name}</label><input value={patientName} onChange={(event) => setPatientName(sanitizeText(event.target.value, 60))} className="input" placeholder={t.namePlaceholder} maxLength={60} /></div><div><label className="label">{t.locality}</label><input value={patientLocality} onChange={(event) => setPatientLocality(sanitizeText(event.target.value, 60))} className="input" placeholder={t.localityPlaceholder} maxLength={60} /></div></div></>}
-        <div className={allowDetailForm ? "mt-5" : ""}><div className="flex items-end justify-between gap-3"><div className="min-w-0"><h2 className="text-lg font-black sm:text-xl">{t.chipsTitle}</h2><p className="mt-1 text-xs font-bold leading-5 text-slate-500">{allowDetailForm ? t.chipsHint : "Select at least 2 active dashboard keywords."}</p></div><span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-[#0A4C95]">{selectedChips.length}/{MIN_DETAIL_CHIPS}</span></div><div className="mt-3 grid grid-cols-1 gap-2 min-[360px]:grid-cols-2 sm:mt-4 sm:gap-2.5">{chipOptions.map((value) => <button key={value} type="button" disabled={loading} aria-pressed={selectedChips.includes(value)} onClick={() => toggleChip(value)} className={`min-h-12 rounded-2xl border-2 px-3 py-2.5 text-left text-sm font-black leading-5 transition active:scale-[.98] disabled:opacity-60 sm:min-h-14 sm:px-4 sm:py-3 ${selectedChips.includes(value) ? "border-[#0A4C95] bg-blue-50 text-[#0A4C95] shadow-md" : "border-slate-200 bg-white text-slate-950 shadow-sm"}`}><span className="flex min-w-0 items-center gap-2 break-words">{selectedChips.includes(value) && <Check size={17} className="shrink-0" />}{value}</span></button>)}</div></div>
+        {detailsUnlocked ? <div className={allowDetailForm ? "mt-5" : ""}><div className="flex items-end justify-between gap-3"><div className="min-w-0"><h2 className="text-lg font-black sm:text-xl">{t.chipsTitle}</h2><p className="mt-1 text-xs font-bold leading-5 text-slate-500">{allowDetailForm ? t.chipsHint : "Select at least 2 active dashboard keywords."}</p></div><span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-[#0A4C95]">{selectedChips.length}/{MIN_DETAIL_CHIPS}</span></div><div className="mt-3 grid grid-cols-1 gap-2 min-[360px]:grid-cols-2 sm:mt-4 sm:gap-2.5">{chipOptions.map((value) => <button key={value} type="button" disabled={loading} aria-pressed={selectedChips.includes(value)} onClick={() => toggleChip(value)} className={`min-h-12 rounded-2xl border-2 px-3 py-2.5 text-left text-sm font-black leading-5 transition active:scale-[.98] disabled:opacity-60 sm:min-h-14 sm:px-4 sm:py-3 ${selectedChips.includes(value) ? "border-[#0A4C95] bg-blue-50 text-[#0A4C95] shadow-md" : "border-slate-200 bg-white text-slate-950 shadow-sm"}`}><span className="flex min-w-0 items-center gap-2 break-words">{selectedChips.includes(value) && <Check size={17} className="shrink-0" />}{value}</span></button>)}</div></div> : <p className="mt-5 rounded-xl bg-red-50 px-4 py-3 text-sm font-black text-red-700">{stepperWarning}</p>}
         {validationError && <p className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-black text-red-700">{validationError}</p>}
         {loading && <div className="mt-4 flex min-h-11 items-center justify-center gap-2 rounded-xl bg-blue-50 px-3 text-sm font-black text-[#0A4C95]"><Loader2 size={18} className="animate-spin" />{t.generating}</div>}
       </section>
 
-      <section ref={draftsSectionRef} className="relative z-30 scroll-mt-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-xl sm:scroll-mt-6 sm:p-6"><div className="flex items-center justify-between gap-3"><div className="min-w-0"><h2 className="text-lg font-black sm:text-xl">{t.draftsTitle}</h2>{selectedChips.length > 0 && <p className="mt-1 break-words text-xs font-bold leading-5 text-slate-500 sm:text-sm">{selectedChips.join(", ")} - {reviewRating} star tone</p>}</div>{loading && <Loader2 size={22} className="shrink-0 animate-spin text-[#0A4C95]" />}</div>{loading ? <div className="mt-4 space-y-3 sm:mt-5 sm:space-y-4" aria-live="polite">{Array.from({ length: 3 }).map((_, index) => <div key={index} className="rounded-2xl border border-slate-200 p-3 sm:p-4"><div className="h-4 w-28 animate-pulse rounded-full bg-slate-200" /><div className="mt-4 space-y-2"><div className="h-3 w-full animate-pulse rounded-full bg-slate-100" /><div className="h-3 w-11/12 animate-pulse rounded-full bg-slate-100" /><div className="h-3 w-8/12 animate-pulse rounded-full bg-slate-100" /></div><div className="mt-4 h-10 animate-pulse rounded-xl bg-blue-50 sm:h-11" /></div>)}</div> : reviews.length ? <div className="mt-4 space-y-3 sm:space-y-4">{reviews.map((review, index) => <article key={index} className="rounded-2xl border-2 border-slate-200 p-3 sm:p-4"><div className="flex gap-1.5">{Array.from({ length: 5 }).map((_, star) => <GoogleStar key={star} active={star < reviewRating} size={16} />)}</div><p className="mt-3 whitespace-pre-line break-words text-sm font-semibold leading-6 sm:text-base sm:leading-7">{review}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-3 text-sm font-black text-white sm:min-h-12 sm:px-4 sm:text-base"><Clipboard size={18} />{t.copyReview}</button></article>)}</div> : <div className="mt-4 rounded-2xl border border-dashed border-slate-300 p-4 text-center text-sm font-bold text-slate-500 sm:mt-5 sm:p-6">{t.empty}</div>}</section>
+      <section ref={draftsSectionRef} className="relative z-30 scroll-mt-3 bg-white py-4 sm:scroll-mt-6 sm:py-6"><div className="flex items-center justify-between gap-3"><div className="min-w-0"><h2 className="text-lg font-black sm:text-xl">{t.draftsTitle}</h2>{selectedChips.length > 0 && <p className="mt-1 break-words text-xs font-bold leading-5 text-slate-500 sm:text-sm">{selectedChips.join(", ")} - {reviewRating} star tone</p>}</div>{loading && <Loader2 size={22} className="shrink-0 animate-spin text-[#0A4C95]" />}</div>{loading ? <div className="mt-4 space-y-3 sm:mt-5 sm:space-y-4" aria-live="polite">{Array.from({ length: 3 }).map((_, index) => <div key={index} className="rounded-2xl border border-slate-200 p-3 sm:p-4"><div className="h-4 w-28 animate-pulse rounded-full bg-slate-200" /><div className="mt-4 space-y-2"><div className="h-3 w-full animate-pulse rounded-full bg-slate-100" /><div className="h-3 w-11/12 animate-pulse rounded-full bg-slate-100" /><div className="h-3 w-8/12 animate-pulse rounded-full bg-slate-100" /></div><div className="mt-4 h-10 animate-pulse rounded-xl bg-blue-50 sm:h-11" /></div>)}</div> : reviews.length ? <div className="mt-4 space-y-3 sm:space-y-4">{reviews.map((review, index) => <article key={index} className="rounded-2xl border-2 border-slate-200 p-3 sm:p-4"><div className="flex gap-1.5">{Array.from({ length: 5 }).map((_, star) => <GoogleStar key={star} active={star < reviewRating} size={16} />)}</div><p className="mt-3 whitespace-pre-line break-words text-sm font-semibold leading-6 sm:text-base sm:leading-7">{review}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#0A4C95] px-3 text-sm font-black text-white sm:min-h-12 sm:px-4 sm:text-base"><Clipboard size={18} />{t.copyReview}</button></article>)}</div> : <div className="mt-4 rounded-2xl border border-dashed border-slate-300 p-4 text-center text-sm font-bold text-slate-500 sm:mt-5 sm:p-6">{t.empty}</div>}</section>
     </div>
     <BrandFooter />
 

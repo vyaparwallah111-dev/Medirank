@@ -142,18 +142,25 @@ function parseReviews(raw:unknown,expectedCount:number){
   }
 }
 
-function ratingLayout(rating:number,language:Language,serviceKeyword:string,doctorName:string,includeDoctorName:boolean,allowEmoji:boolean,lengthBracket:LengthBracket,keywordInjectionActive:boolean){
+function ratingLayout(rating:number,language:Language,serviceKeyword:string,doctorName:string,includeDoctorName:boolean,allowEmoji:boolean,lengthBracket:LengthBracket,keywordInjectionActive:boolean,patientName:string,patientLocality:string){
   const service=serviceKeyword||'service';
+  const patientRule=patientName&&patientLocality
+    ? `patient_context_rule: mandatory in every draft. Naturally include the exact patient name "${patientName}" and exact locality "${patientLocality}" in the review text for every rating tier, including 1-star, 2-star, and 3-star neutral drafts. Do not drop these details for brevity or line-count constraints.`
+    : patientName
+      ? `patient_context_rule: mandatory in every draft. Naturally include the exact patient name "${patientName}" for every rating tier. Do not drop it for brevity.`
+      : patientLocality
+        ? `patient_context_rule: mandatory in every draft. Naturally include the exact locality "${patientLocality}" for every rating tier. Do not drop it for brevity.`
+        : 'patient_context_rule: no patient name or locality was provided.';
   const doctorRule=includeDoctorName
     ? `doctor_name_rule: include the exact doctor name "${doctorName}" naturally in every draft while respecting the rating shape.`
     : 'doctor_name_rule: do not mention any doctor name.';
   const emojiRule=allowEmoji
     ? 'emoji_rule: high-tier only; randomly allow at most one sparse contextual emoji in some drafts, chosen organically from examples like 👍, 🦷, ⭐. Never repeat the same emoji in every draft.'
     : 'emoji_rule: no emoji.';
-  if(rating===1)return `rating_shape: 1 star. Negative/constructive complaint. ${keywordInjectionActive?`Use "${service}" only if it fits the friction.`:'No keyword requirement; raw emotional complaint is allowed.'} Never soften, hide, block, or convert the complaint into praise. ${doctorRule} ${emojiRule}`;
-  if(rating===2)return `rating_shape: 2 stars. Casual low-satisfaction plain narrative. Sound disappointed but not dramatic. ${doctorRule} ${emojiRule}`;
-  if(rating===3)return `rating_shape: 3 stars. Mid-tier neutral review, strictly 2 to 4 text lines per review. ${doctorRule} ${emojiRule}`;
-  return `rating_shape: ${rating} stars. Use ${lengthBracket.key} length: ${lengthBracket.min}-${lengthBracket.max} lines per review, target ${lengthBracket.target}. Combine active name/locality inputs only when present. ${doctorRule} ${emojiRule}`;
+  if(rating===1)return `rating_shape: 1 star. Negative/constructive complaint. ${keywordInjectionActive?`Use "${service}" only if it fits the friction.`:'No keyword requirement; raw emotional complaint is allowed.'} Never soften, hide, block, or convert the complaint into praise. ${patientRule} ${doctorRule} ${emojiRule}`;
+  if(rating===2)return `rating_shape: 2 stars. Casual low-satisfaction plain narrative. Sound disappointed but not dramatic. ${patientRule} ${doctorRule} ${emojiRule}`;
+  if(rating===3)return `rating_shape: 3 stars. Mid-tier neutral review, strictly 2 to 4 text lines per review. ${patientRule} ${doctorRule} ${emojiRule}`;
+  return `rating_shape: ${rating} stars. Use ${lengthBracket.key} length: ${lengthBracket.min}-${lengthBracket.max} lines per review, target ${lengthBracket.target}. ${patientRule} ${doctorRule} ${emojiRule}`;
 }
 
 function shapeLines(content:string,rating:number,language:Language,lengthBracket=selectLengthBracket(rating)){
@@ -193,6 +200,32 @@ function injectDoctorName(content:string,doctorName:string,rating:number,languag
       ? `${doctorName} ke saath experience low-satisfaction raha.`
       : `My experience with ${doctorName} felt low-satisfaction.`;
   }
+  return shapeLines(lines.join('\n'),rating,language,lengthBracket);
+}
+
+function injectPatientContext(content:string,patientName:string,patientLocality:string,rating:number,language:Language,lengthBracket=selectLengthBracket(rating)){
+  const safeName=sanitizeText(patientName,60);
+  const safeLocality=sanitizeText(patientLocality,60);
+  if(!safeName&&!safeLocality)return shapeLines(content,rating,language,lengthBracket);
+  const hasName=!safeName||normalize(content).includes(normalize(safeName));
+  const hasLocality=!safeLocality||normalize(content).includes(normalize(safeLocality));
+  if(hasName&&hasLocality)return shapeLines(content,rating,language,lengthBracket);
+  const lines=content.split(/\n+/).map(line=>line.trim()).filter(Boolean);
+  const first=lines[0]||(
+    rating<=2
+      ? (language==='hinglish'?'experience expected se weak laga.':'the experience felt below expectations.')
+      : rating===3
+        ? (language==='hinglish'?'visit ka experience neutral raha.':'the visit felt neutral.')
+        : (language==='hinglish'?'clinic visit comfortable raha.':'the clinic visit felt comfortable.')
+  );
+  const identity=safeName&&safeLocality
+    ? (language==='hinglish'?`${safeName}, ${safeLocality} se`:`${safeName} from ${safeLocality}`)
+    : safeName
+      ? safeName
+      : (language==='hinglish'?`${safeLocality} se`:`from ${safeLocality}`);
+  lines[0]=language==='hinglish'
+    ? `Main ${identity}, ${first.replace(/^main\s+/i,'')}`
+    : `I am ${identity}, and ${first.replace(/^I\s+/i,'')}`;
   return shapeLines(lines.join('\n'),rating,language,lengthBracket);
 }
 
@@ -318,7 +351,7 @@ Deno.serve(async(req)=>{
     if(rating===1)keywordInjectionActive=opWindow.isActive&&keywordInjectionsToday<DAILY_KEYWORD_SEQUENCE_CAP&&Math.random()<.50;
     const strategy:Strategy=keywordInjectionActive?'keyword_optimized':'clean_human';
     const injectionKeywords=keywordInjectionActive?unique([clinicName,primaryArea,patientLocality,...selectedChips,...activeKeywords],10):[];
-    const blockedKeywords=!keywordInjectionActive?unique([clinicName,...(!includeDoctorName?[doctorName]:[]),primaryArea,patientLocality,...selectedChips,...activeKeywords],30):[];
+    const blockedKeywords=!keywordInjectionActive?unique([clinicName,...(!includeDoctorName?[doctorName]:[]),primaryArea,...selectedChips,...activeKeywords],30):[];
     const recentMetaResult=await db.from('review_generation_meta').select('structure_archetype_key,personality_variant').eq('doctor_id',doctor.id).order('created_at',{ascending:false}).limit(100);
     if(recentMetaResult.error)console.error('Pattern history lookup failed; using fresh random pattern state',recentMetaResult.error);
     const recentRows=(recentMetaResult.data||[]) as Array<{structure_archetype_key?:unknown;personality_variant?:unknown}>;
@@ -337,7 +370,7 @@ lang=${effectiveLanguage==='hinglish'?'Hinglish Latin':'English'}; rating=${rati
 ${strategyBlock}
 clinic=${keywordInjectionActive?JSON.stringify(clinicName):'null'}; area=${keywordInjectionActive?JSON.stringify(primaryArea):'null'}; chips=${keywordInjectionActive?JSON.stringify(selectedChips):'[]'}
 patient=${JSON.stringify({name:patientName||'',locality:patientLocality||'',note:customNotes||''})}
-${ratingLayout(rating,effectiveLanguage,keywordInjectionActive?serviceKeyword:'service',doctorName,includeDoctorName,allowEmoji,lengthBracket,keywordInjectionActive)}
+${ratingLayout(rating,effectiveLanguage,keywordInjectionActive?serviceKeyword:'service',doctorName,includeDoctorName,allowEmoji,lengthBracket,keywordInjectionActive,patientName,patientLocality)}
 complaint_safety=${rating<=2?'never block, filter, soften, or praise-convert low-star feedback':'normal safe review tone'}; owner_response_hook=off.`;
 
     let reviews:string[]=[];
@@ -363,7 +396,10 @@ complaint_safety=${rating<=2?'never block, filter, soften, or praise-convert low
         const modelText=parts.map(part=>typeof part.text==='string'?part.text:'').filter(Boolean).join('\n\n');
         const strictDrafts=parseReviews(modelText,TARGET_COUNT);
         if(strictDrafts.length!==TARGET_COUNT)throw new Error('Gemini response violated strict JSON object-map contract');
-        reviews=strictDrafts.map(review=>includeDoctorName?injectDoctorName(review,doctorName,rating,effectiveLanguage,lengthBracket):shapeLines(review,rating,effectiveLanguage,lengthBracket));
+        reviews=strictDrafts.map(review=>{
+          const withDoctor=includeDoctorName?injectDoctorName(review,doctorName,rating,effectiveLanguage,lengthBracket):shapeLines(review,rating,effectiveLanguage,lengthBracket);
+          return injectPatientContext(withDoctor,patientName,patientLocality,rating,effectiveLanguage,lengthBracket);
+        });
       }
     }catch(error){
       const message=error instanceof Error?error.message:String(error);
@@ -372,7 +408,10 @@ complaint_safety=${rating<=2?'never block, filter, soften, or praise-convert low
     }
 
     if(reviews.length<TARGET_COUNT){
-      reviews=unique([...reviews,...emergencyDrafts(effectiveLanguage,rating)],TARGET_COUNT).map(review=>includeDoctorName?injectDoctorName(review,doctorName,rating,effectiveLanguage,lengthBracket):shapeLines(review,rating,effectiveLanguage,lengthBracket));
+      reviews=unique([...reviews,...emergencyDrafts(effectiveLanguage,rating)],TARGET_COUNT).map(review=>{
+        const withDoctor=includeDoctorName?injectDoctorName(review,doctorName,rating,effectiveLanguage,lengthBracket):shapeLines(review,rating,effectiveLanguage,lengthBracket);
+        return injectPatientContext(withDoctor,patientName,patientLocality,rating,effectiveLanguage,lengthBracket);
+      });
     }
     reviews=reviews.slice(0,TARGET_COUNT);
 
@@ -380,10 +419,13 @@ complaint_safety=${rating<=2?'never block, filter, soften, or praise-convert low
       const leaked=reviews.some(review=>blockedKeywords.some(keyword=>keyword&&normalize(review).includes(normalize(keyword))));
       if(leaked){
         console.error('Clean human output leaked structural keyword; using emergency drafts',{doctor_id:doctor.id,dailySequence});
-        reviews=emergencyDrafts(effectiveLanguage,rating);
+        reviews=emergencyDrafts(effectiveLanguage,rating).map(review=>injectPatientContext(review,patientName,patientLocality,rating,effectiveLanguage,lengthBracket));
       }
     }
-    if(includeDoctorName)reviews=reviews.map(review=>injectDoctorName(review,doctorName,rating,effectiveLanguage,lengthBracket));
+    reviews=reviews.map(review=>{
+      const withDoctor=includeDoctorName?injectDoctorName(review,doctorName,rating,effectiveLanguage,lengthBracket):shapeLines(review,rating,effectiveLanguage,lengthBracket);
+      return injectPatientContext(withDoctor,patientName,patientLocality,rating,effectiveLanguage,lengthBracket);
+    });
     const firstFourWordSample=reviews.length?firstFourWords(reviews[0]):'';
 
     const metadata={
