@@ -64,11 +64,10 @@ export default async function PatientPage({params}:PageProps){
       console.error('Patient page scan session insert failed:',scanResult.reason);
     }
     const operationalWindow=getOperationalWindow();
-    const showPersonalizedFlow=operationalWindow.isActive&&Math.random()<0.25;
     const routingState={
       operationalScanSequence:0,
-      allowLanguageStep:showPersonalizedFlow,
-      allowDetailForm:showPersonalizedFlow,
+      allowLanguageStep:true,
+      allowDetailForm:true,
     };
     const treatmentKeywords=keywords.filter(item=>item.category==='treatment').map(item=>item.keyword).filter(Boolean);
     const topServices=Array.from(new Set<string>([...knowledgeBase.top_services,...treatmentKeywords]));

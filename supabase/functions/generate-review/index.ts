@@ -10,9 +10,9 @@ const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status
 const GEMINI_MODEL='gemini-2.5-flash';
 const HELPER_MODEL='gemini-3.1-flash-lite';
 const GEMINI_TIMEOUT_MS=7_000;
-const TARGET_COUNT=4;
-const DOCTOR_NAME_CAP_DAILY=5;
-const DAILY_KEYWORD_SEQUENCE_CAP=10;
+const TARGET_COUNT=2;
+const DOCTOR_NAME_INJECTION_PROBABILITY=0.50;
+const DAILY_KEYWORD_SEQUENCE_CAP=500;
 const PERSONALIZED_FLOW_PROBABILITY=0.25;
 
 type KB={area_name?:unknown;city_name?:unknown;top_services?:unknown};
@@ -21,13 +21,13 @@ type Strategy='keyword_optimized'|'clean_human';
 type LengthBracket={key:string;min:number;max:number;target:number};
 type ArchetypeKey='A'|'B'|'C'|'D'|'E'|'F'|'G';
 const STRUCTURE_ARCHETYPES:Record<ArchetypeKey,string>={
-  A:'Write as ONE flowing sentence, no formal breaks, casual run-on style.',
-  B:"Start directly with the doctor's name, skip any generic opening line.",
-  C:'Start with a short backstory reason for the visit (1 line), then the experience.',
-  D:'Keep it to a single short line, no elaboration, no closing remark.',
-  E:'Write like a list of quick observations separated by commas, not polished sentences.',
-  F:'End abruptly after the main point \u2014 no overall/highly recommend wrap-up.',
-  G:'Mention one minor imperfection naturally before the positive note.',
+  A:'Write as ONE flowing sentence, no formal breaks, casual run-on style. Conversational, like texting a friend.',
+  B:"Start directly with the doctor's name, skip any generic opening. Focus on their personal impact.",
+  C:'Start with a short backstory reason for the visit (1 line), then the experience. Personal angle.',
+  D:'Keep it to a single short line, no elaboration, no closing remark. Crisp, punchy.',
+  E:'Write like a list of quick observations separated by commas, not polished sentences. Rapid-fire.',
+  F:'End abruptly after the main point \u2014 no wrap-up. Stop mid-thought to feel authentic.',
+  G:'Mention one minor imperfection naturally before the positive note. Real experiences aren\'t perfect.',
 };
 const PERSONALITY_VARIANTS=['plain-spoken','warm-local','reserved-observer','practical-detail','busy-patient','soft-conversational'] as const;
 const casingProfiles=['mostly lower-case natural typing','standard sentence casing with one casual fragment','mixed short sentence starts, no title case','one small typo-like casing wobble allowed'] as const;
@@ -92,7 +92,68 @@ const haversine=(lat1:number,lon1:number,lat2:number,lon2:number)=>{const rad=(v
 const clamp=(value:number,min:number,max:number)=>Math.min(max,Math.max(min,value));
 const randomInt=(min:number,max:number)=>Math.floor(Math.random()*(max-min+1))+min;
 const randomItem=<T,>(items:readonly T[])=>items[Math.floor(Math.random()*items.length)];
+const doctorKeywordCombo=(doctorName:string,keyword:string,language:Language)=>{
+  if(!doctorName||!keyword)return keyword;
+  const d=doctorName.split(/\s+/)[0];
+  if(language==='hinglish'){
+    const templates=[`${d} ne ${keyword.toLowerCase()} explain kiya`,`${d} ke paas ${keyword.toLowerCase()} expertise`,`${d} se ${keyword.toLowerCase()} treatment`];
+    return randomItem(templates);
+  }else{
+    const templates=[`${d} explained ${keyword.toLowerCase()}`,`${d}'s ${keyword.toLowerCase()} expertise`,`${d} handled ${keyword.toLowerCase()}`];
+    return randomItem(templates);
+  }
+};
 const firstFourWords=(value:string)=>sanitizeText(value,160).split(/\s+/).filter(Boolean).slice(0,4).join(' ');
+const selectPriorityKeywords=(aiSettings:any,dashboardKeywords:string[])=>{
+  if(!aiSettings)return{high:[],medium:[],low:[]};
+  const high=jsonList(aiSettings.target_keywords?.high||[]);
+  const medium=jsonList(aiSettings.target_keywords?.medium||[]);
+  const low=jsonList(aiSettings.target_keywords?.low||[]);
+  return{high:unique(high,10),medium:unique(medium,10),low:unique(low,10)};
+};
+const mergeKeywordsByPriority=(priorityKeywords:any,dashboardKeywords:string[])=>{
+  const highSet=new Set(priorityKeywords.high.map(normalize));
+  const mediumSet=new Set(priorityKeywords.medium.map(normalize));
+  const lowSet=new Set(priorityKeywords.low.map(normalize));
+  const merged={high:[...priorityKeywords.high],medium:[...priorityKeywords.medium],low:[...priorityKeywords.low]};
+  for(const kw of dashboardKeywords){
+    const n=normalize(kw);
+    if(!highSet.has(n)&&!mediumSet.has(n)&&!lowSet.has(n))merged.medium.push(kw);
+  }
+  return merged;
+};
+const pickKeywordsByPriority=(mergedKeywords:any,reviewIndex:number)=>{
+  const picked=[];
+  if(mergedKeywords.high.length>0)picked.push(randomItem(mergedKeywords.high));
+  if(mergedKeywords.medium.length>0&&Math.random()<0.5)picked.push(randomItem(mergedKeywords.medium));
+  if(mergedKeywords.low.length>0&&Math.random()<0.2)picked.push(randomItem(mergedKeywords.low));
+  return unique(picked,5);
+};
+const selectPatientConcern=(aiSettings:any,rating:number)=>{
+  if(!aiSettings)return null;
+  const concerns=jsonList(aiSettings.patient_concerns||[]);
+  if(concerns.length===0)return null;
+  if(rating<=2)return null;
+  return randomItem(concerns);
+};
+const selectUSPPoint=(aiSettings:any)=>{
+  if(!aiSettings)return null;
+  const usps=jsonList(aiSettings.usp_points||[]);
+  if(usps.length===0)return null;
+  return randomItem(usps);
+};
+const mapToneToArchetype=(tonePref:string|null|undefined,recentArchetypes:ArchetypeKey[]):ArchetypeKey=>{
+  if(!tonePref)return selectArchetype(recentArchetypes);
+  const toneMap:Record<string,ArchetypeKey>={
+    professional:'B',
+    casual:'A',
+    warm:'E',
+    formal:'D',
+    conversational:'F',
+  };
+  const mapped=toneMap[tonePref.toLowerCase()];
+  return mapped||selectArchetype(recentArchetypes);
+};
 const hourlyKeywordProbability=(opWindow:ReturnType<typeof operationalWindow>,usedCount:number)=>{
   if(!opWindow.isActive||usedCount>=DAILY_KEYWORD_SEQUENCE_CAP)return 0;
   const progress=clamp((opWindow.nowMs-opWindow.startMs)/(opWindow.endMs-opWindow.startMs),0,1);
@@ -252,35 +313,36 @@ function injectPatientContext(content:string,patientName:string,patientLocality:
   return shapeLines(lines.join('\n'),rating,language,lengthBracket);
 }
 
-function emergencyDrafts(language:Language,rating=5){
+function emergencyDrafts(language:Language,rating=5,keywords:string[]=[]){
+  const keywordHint=keywords.length>0?keywords[0]:'service';
   if(rating<=2){
     const seeds=language==='hinglish'
       ? [
-        'Visit se expectations meet nahi hui.\nProcess confusing laga aur wait bhi zyada feel hua.\nIs area mein improvement chahiye.',
-        'Experience low satisfaction wala tha.\nCommunication clearer ho sakti thi.\nMain bas honest feedback de raha hoon.',
-        'Mujhe visit smooth nahi laga.\nBasic coordination better ho sakta tha.',
-        'Service ke dauran friction feel hua.\nFollow-up aur explanation aur clear ho sakte the.',
+        `Visit se expectations meet nahi hui.\n${keywordHint} mein kuch issues the.\nProcess better ho sakti thi.`,
+        `Experience low satisfaction wala tha.\nCommunication ${keywordHint} ke baare mein clearer hona chahiye tha.\nMain bas honest feedback de raha hoon.`,
+        `Visit during ${keywordHint} treatment smooth nahi laga.\nCoordination aur explanation improve ho sakte the.`,
+        `Service ke dauran issues feel hue.\nFollow-up better ho sakta tha.`,
       ]
       : [
-        'The visit did not meet my expectations.\nThe process felt confusing and the waiting experience could be better.\nThis needs improvement.',
-        'My experience felt low-satisfaction.\nCommunication could have been clearer.\nI am leaving this as honest feedback.',
-        'The visit did not feel smooth to me.\nBasic coordination could be handled better.',
-        'There was friction during the service.\nThe follow-up and explanation could have been clearer.',
+        `The visit did not meet my expectations.\nThe ${keywordHint} process could be clearer.\nThis needs improvement.`,
+        `My ${keywordHint} experience felt low-satisfaction.\nCommunication could have been better.\nI am leaving this as honest feedback.`,
+        `The visit for ${keywordHint} did not feel smooth.\nCoordination could be handled better.`,
+        `There were concerns about ${keywordHint}.\nThe follow-up could have been clearer.`,
       ];
     return seeds.map(seed=>shapeLines(seed,rating,language)).slice(0,TARGET_COUNT);
   }
   const seeds=language==='hinglish'
     ? [
-      'Clinic visit ka experience theek raha.\nStaff helpful tha aur doctor ne baat clearly samjhai.\nOverall mujhe comfortable feel hua.',
-      'Mera visit simple aur smooth raha.\nDoctor ne calmly guide kiya.\nClinic ka environment bhi neat tha.',
-      'Aaj ka visit manageable laga.\nProcess clear tha aur staff ka response polite tha.\nMain apna honest feedback share kar raha hoon.',
-      'Clinic mein experience normal aur comfortable tha.\nDoctor ne concerns dhyan se sune.\nFollow-up ke liye bhi clear guidance mili.',
+      `Clinic visit ka experience theek raha.\n${keywordHint} treatment helpful tha aur doctor ne clearly samjhai.\nOverall mujhe comfortable feel hua.`,
+      `Mera ${keywordHint} visit simple aur smooth raha.\nDoctor ne calmly guide kiya.\nClinic ka environment bhi neat tha.`,
+      `Aaj ka visit manageable laga.\n${keywordHint} process clear tha aur staff ka response polite tha.`,
+      `Clinic mein experience comfortable tha.\nDoctor ne ${keywordHint} ke concerns dhyan se sune.\nFollow-up clear mili.`,
     ]
     : [
-      'My clinic visit went well overall.\nThe doctor explained things clearly and the staff was polite.\nI felt comfortable through the appointment.',
-      'The appointment was comfortable and well managed.\nThe team handled things smoothly, and the doctor answered my concerns.\nOverall it felt simple and reassuring.',
-      'I visited with a few doubts in mind.\nThe doctor listened patiently and explained the next steps clearly.\nThe clinic experience felt calm and professional.',
-      'The clinic felt clean and organised.\nThe staff was polite, and the doctor guided me properly.\nOverall, it was a positive visit.',
+      `My clinic visit went well overall.\nThe ${keywordHint} treatment was explained clearly.\nI felt comfortable and satisfied.`,
+      `The appointment was comfortable and well managed.\nThe ${keywordHint} experience was handled smoothly.\nOverall it felt reassuring.`,
+      `I visited for ${keywordHint} with some doubts.\nThe doctor listened and explained clearly.\nThe clinic experience felt professional.`,
+      `The clinic felt clean and organised.\nThe ${keywordHint} service was handled well.\nOverall, it was a positive visit.`,
     ];
   return seeds.map(seed=>shapeLines(seed,rating,language)).slice(0,TARGET_COUNT);
 }
@@ -305,9 +367,14 @@ Deno.serve(async(req)=>{
       return reply({reviews:emergencyDrafts(fallbackLanguage),target_count:TARGET_COUNT,quality:{fallback:true}});
     }
     db=createClient(url,serviceKey);
-    const {data:doctor,error:doctorError}=await db.from('doctors').select('id,doctor_name,clinic_name,city,specialization,knowledge_base,latitude,longitude').eq('id',doctorId).eq('is_active',true).maybeSingle();
+    const [doctorResult,aiSettingsResult]=await Promise.allSettled([
+      db.from('doctors').select('id,doctor_name,clinic_name,city,specialization,knowledge_base,latitude,longitude').eq('id',doctorId).eq('is_active',true).maybeSingle(),
+      db.from('doctor_ai_settings').select('target_keywords,target_areas,patient_concerns,usp_points,tone_preference').eq('doctor_id',doctorId).maybeSingle(),
+    ]);
+    const {data:doctor,error:doctorError}=doctorResult.status==='fulfilled'?doctorResult.value:{data:null,error:doctorResult.reason};
     if(doctorError){void logSystemError(db,doctorId,doctorError.message||'Doctor lookup failed');return reply({reviews:emergencyDrafts(fallbackLanguage),target_count:TARGET_COUNT,quality:{fallback:true}})}
     if(!doctor){void logSystemError(db,doctorId,'Clinic not found or inactive');return reply({reviews:emergencyDrafts(fallbackLanguage),target_count:TARGET_COUNT,quality:{fallback:true}})}
+    const aiSettings=aiSettingsResult.status==='fulfilled'?aiSettingsResult.value.data:null;
 
     const deviceToken=sanitizeText(body.device_token,128);
     if(!deviceToken)return reply({error:'Unable to verify this device. Please refresh and try again.'},400);
@@ -324,38 +391,34 @@ Deno.serve(async(req)=>{
     const opWindow=operationalWindow();
     const suppliedPatientName=normalizeHumanInput(body.patient_name,60,'name');
     const suppliedPatientLocality=normalizeHumanInput(body.patient_locality,60,'locality');
-    const hasSubmittedPersonalDetails=!!(suppliedPatientName||suppliedPatientLocality);
-    const personalizedFlowRoll=opWindow.isActive&&Math.random()<PERSONALIZED_FLOW_PROBABILITY;
     const operationalScanSequence=0;
-    const allowLanguageStep=hasSubmittedPersonalDetails||personalizedFlowRoll;
-    const allowDetailForm=hasSubmittedPersonalDetails||personalizedFlowRoll;
-    if(body.precheck_only===true)return reply({allowed:true,location_verified:locationVerified,distance_meters:distanceMeters,routing:{operational_scan_sequence:operationalScanSequence,operational_window_active:opWindow.isActive,operational_window_start:opWindow.startIso,operational_window_end:opWindow.endIso,personalized_flow_probability:PERSONALIZED_FLOW_PROBABILITY,personalized_flow_roll:personalizedFlowRoll,allow_language_step:allowLanguageStep,allow_detail_form:allowDetailForm}});
+    const allowLanguageStep=true;
+    const allowDetailForm=true;
+    if(body.precheck_only===true)return reply({allowed:true,location_verified:locationVerified,distance_meters:distanceMeters,routing:{operational_scan_sequence:operationalScanSequence,operational_window_active:opWindow.isActive,operational_window_start:opWindow.startIso,operational_window_end:opWindow.endIso,allow_language_step:allowLanguageStep,allow_detail_form:allowDetailForm}});
 
-    const effectiveLanguage:Language=allowLanguageStep&&body.language==='hinglish'?'hinglish':'english';
+    const effectiveLanguage:Language=body.language==='hinglish'?'hinglish':'english';
     fallbackLanguage=effectiveLanguage;
     const rating=Math.min(5,Math.max(1,Math.round(Number(body.rating)||5)));
     const kb=(doctor.knowledge_base&&typeof doctor.knowledge_base==='object'?doctor.knowledge_base:{}) as KB;
     const primaryArea=sanitizeText(body.primary_area,80)||sanitizeText(kb.area_name,80)||sanitizeText(doctor.city,80);
-    const patientName=allowDetailForm?suppliedPatientName:'';
-    const patientLocality=allowDetailForm?suppliedPatientLocality:'';
+    const patientName=suppliedPatientName;
+    const patientLocality=suppliedPatientLocality;
     const customNotes=sanitizeText(body.custom_notes,240);
 
     const {data:keywordRows,error:keywordError}=await db.from('doctor_keywords').select('keyword,category').eq('doctor_id',doctor.id).order('created_at');
     if(keywordError)console.error('Doctor keyword lookup failed; continuing with supplied chips only',keywordError);
-    const activeKeywords=unique((keywordRows||[]).map(row=>sanitizeText(row.keyword,80)),20);
-    const allowedKeywords=new Set(activeKeywords.map(normalize));
+    const dashboardKeywords=unique((keywordRows||[]).map(row=>sanitizeText(row.keyword,80)),20);
+    const priorityKeywords=selectPriorityKeywords(aiSettings,dashboardKeywords);
+    const mergedKeywords=mergeKeywordsByPriority(priorityKeywords,dashboardKeywords);
+    const allAvailableKeywords=unique([...mergedKeywords.high,...mergedKeywords.medium,...mergedKeywords.low],30);
+    const allowedKeywords=new Set(allAvailableKeywords.map(normalize));
     const requestedChips=unique([...list(body.selected_chips,80),...list(body.selected_keywords,80),...list(body.selected_experiences,80),sanitizeText(body.selected_chip,80)].filter(Boolean),5)
       .filter(item=>!allowedKeywords.size||allowedKeywords.has(normalize(item)));
-    const selectedChips=requestedChips.length?requestedChips:activeKeywords.slice(0,2);
-    const serviceKeyword=selectedChips[0]||activeKeywords[0]||'service';
+    const selectedChips=requestedChips.length?requestedChips:pickKeywordsByPriority(mergedKeywords,0);
+    const serviceKeyword=selectedChips[0]||mergedKeywords.high[0]||mergedKeywords.medium[0]||'service';
     const doctorName=sanitizeText(doctor.doctor_name,100);
     const clinicName=sanitizeText(doctor.clinic_name,120);
-    const metaCountResult=opWindow.isActive
-      ? await db.from('review_generation_meta').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).eq('is_doctor_name_included',true).gte('created_at',opWindow.startIso).lt('created_at',opWindow.endIso)
-      : {count:0,error:null};
-    if(metaCountResult.error)console.error('Doctor name operational meta lookup failed; defaulting to no doctor-name injection',metaCountResult.error);
-    const doctorNameIncludedToday=metaCountResult.error?DOCTOR_NAME_CAP_DAILY:(metaCountResult.count??0);
-    const includeDoctorName=opWindow.isActive&&doctorNameIncludedToday<DOCTOR_NAME_CAP_DAILY;
+    const includeDoctorName=Math.random()<DOCTOR_NAME_INJECTION_PROBABILITY;
     const isNameAreaPrompted=allowDetailForm;
     const isLanguagePrompted=allowLanguageStep;
     const allowEmoji=rating>=4&&Math.random()<.45;
@@ -364,47 +427,58 @@ Deno.serve(async(req)=>{
     const dailyCountResult=await db.from('review_generation_events').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).gte('created_at',opWindow.startIso).lt('created_at',opWindow.endIso);
     if(dailyCountResult.error)console.error('Daily generation sequence lookup failed; defaulting to first generation',dailyCountResult.error);
     const dailySequence=(dailyCountResult.count??0)+1;
-    const keywordUseResult=opWindow.isActive
-      ? await db.from('review_generation_meta').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).eq('keyword_injection_active',true).gte('created_at',opWindow.startIso).lt('created_at',opWindow.endIso)
-      : {count:0,error:null};
-    if(keywordUseResult.error)console.error('Keyword usage lookup failed; continuing with conservative probability',keywordUseResult.error);
+    const keywordUseResult=await db.from('review_generation_meta').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).eq('keyword_injection_active',true).gte('created_at',opWindow.startIso).lt('created_at',opWindow.endIso);
+    if(keywordUseResult.error)console.error('Keyword usage lookup failed; continuing anyway',keywordUseResult.error);
     const keywordInjectionsToday=keywordUseResult.error?0:(keywordUseResult.count??0);
-    const keywordProbability=hourlyKeywordProbability(opWindow,keywordInjectionsToday);
-    let keywordInjectionActive=opWindow.isActive&&keywordInjectionsToday<DAILY_KEYWORD_SEQUENCE_CAP&&Math.random()<keywordProbability;
-    if(rating===1)keywordInjectionActive=opWindow.isActive&&keywordInjectionsToday<DAILY_KEYWORD_SEQUENCE_CAP&&Math.random()<.50;
+    let keywordInjectionActive=selectedChips.length>=2&&keywordInjectionsToday<DAILY_KEYWORD_SEQUENCE_CAP;
     const strategy:Strategy=keywordInjectionActive?'keyword_optimized':'clean_human';
-    const injectionKeywords=keywordInjectionActive?unique([clinicName,primaryArea,patientLocality,...selectedChips,...activeKeywords],10):[];
-    const blockedKeywords=!keywordInjectionActive?unique([clinicName,...(!includeDoctorName?[doctorName]:[]),primaryArea,...selectedChips,...activeKeywords],30):[];
+    const treatmentChips=selectedChips.filter(chip=>allAvailableKeywords.some(ak=>normalize(ak)===normalize(chip)));
+    const doctorCombos=includeDoctorName&&doctorName?treatmentChips.slice(0,2).map(chip=>doctorKeywordCombo(doctorName,chip,effectiveLanguage)):[];
+    const selectedConcern=selectPatientConcern(aiSettings,rating);
+    const selectedUSP=selectUSPPoint(aiSettings);
+    const secondaryArea=(Math.random()<0.25&&aiSettings?.target_areas?.secondary?.length>0)?jsonList(aiSettings.target_areas.secondary)[0]:null;
+    const injectionKeywords=keywordInjectionActive?unique([clinicName,primaryArea,patientLocality,...selectedChips,...doctorCombos,...allAvailableKeywords,...(selectedUSP?[selectedUSP]:[]),...(secondaryArea?[secondaryArea]:[])],15):[];
+    const blockedKeywords=!keywordInjectionActive?unique([clinicName,...(!includeDoctorName?[doctorName]:[]),primaryArea,...selectedChips,...allAvailableKeywords],30):[];
     const recentMetaResult=await db.from('review_generation_meta').select('structure_archetype_key,personality_variant').eq('doctor_id',doctor.id).order('created_at',{ascending:false}).limit(100);
     if(recentMetaResult.error)console.error('Pattern history lookup failed; using fresh random pattern state',recentMetaResult.error);
     const recentRows=(recentMetaResult.data||[]) as Array<{structure_archetype_key?:unknown;personality_variant?:unknown}>;
-    const selectedArchetypeKey=selectArchetype(recentRows.slice(0,3).map(row=>sanitizeText(row.structure_archetype_key,2)));
+    const recentArchetypes=recentRows.slice(0,3).map(row=>sanitizeText(row.structure_archetype_key,2)) as ArchetypeKey[];
+    const selectedArchetypeKey=mapToneToArchetype(aiSettings?.tone_preference,recentArchetypes);
     const selectedArchetype=STRUCTURE_ARCHETYPES[selectedArchetypeKey];
     const personalityVariant=selectPersonalityVariant(recentRows.map(row=>sanitizeText(row.personality_variant,40)).filter(Boolean));
     const casingProfile=randomItem(casingProfiles);
     const ownerResponseHookState={enabled:false,status:'reserved'};
 
-    const structuralPrefix=`JSON only: return exactly ${TARGET_COUNT} objects [{"review":"..."}]. No markdown or wrapper. Block phrases: "sharing my genuine review", "overall it was good", "highly satisfied". No fake outcomes, diagnosis, discounts, legal claims, staff names, or templated closings. Preserve requested line count. If patient_name and locality are passed, you are FORCED to incorporate them naturally as character variables inside the generated output. Never truncate or omit them under any structural length condition. CRITICAL: If patient_name and locality are provided in the dynamic variables, you are strictly REQUIRED to incorporate both the name and the area naturally into the generated review text. This rule applies unconditionally to all 3-star (neutral), 4-star, and 5-star (premium story) generations. Do not truncate, omit, or drop these placeholders under any length or style constraint.`;
+    const structuralPrefix=`JSON: exactly ${TARGET_COUNT} [{"review":"..."}], no markdown. BLOCKED_PHRASES: "sharing genuine","overall good","highly satisfied","recently visited","my experience was","I would definitely recommend","five-star","would rate","everything was perfect","best clinic","without a doubt". No fake outcomes/diagnosis/claims. If name/locality: MUST include naturally. Each keyword: 2x+ per review, varied contexts. Allow: small typos, casual tone, minor imperfections (makes it human).`;
     const strategyBlock=keywordInjectionActive
-      ? `keywords=${JSON.stringify(injectionKeywords)}; use naturally, no stuffing, max 10 assets.`
+      ? `keywords=${JSON.stringify(injectionKeywords)}; MANDATORY: use each selected chip at least 2x per review, distribute naturally across different contexts, no keyword-stuffing or repetition in same sentence.`
       : `keywords=none; ambient only. Avoid exact assets ${JSON.stringify(blockedKeywords)}.`;
+    const highPriorityKeywords=mergedKeywords.high.slice(0,2).join(', ');
     const executionLayout=`ARCH=${selectedArchetypeKey}: ${selectedArchetype}
 lang=${effectiveLanguage==='hinglish'?'Hinglish Latin':'English'}; rating=${rating}; length=${lengthBracket.key}:${lengthBracket.min}-${lengthBracket.max},target=${lengthBracket.target}; casing=${casingProfile}; tone=${personalityVariant}
+VARIATION: Use mixed sentence lengths (short + long). Start differently each time: question, statement, personal angle. Include one conversational aside or small imperfection to feel genuine.
 ${strategyBlock}
 clinic=${keywordInjectionActive?JSON.stringify(clinicName):'null'}; area=${keywordInjectionActive?JSON.stringify(primaryArea):'null'}; chips=${keywordInjectionActive?JSON.stringify(selectedChips):'[]'}
 patient=${JSON.stringify({name:patientName||'',locality:patientLocality||'',note:customNotes||''})}
+MANDATORY_ELEMENTS: guaranteed_keywords=[${highPriorityKeywords}] (must include these naturally); concern=${selectedConcern?`"${selectedConcern}" (subtly address this if review mentions comfort/experience)`:'none'}; usp=${selectedUSP?`"${selectedUSP}" (naturally weave once if relevant)`:'none'}; secondary_area=${secondaryArea?`"${secondaryArea}" (mention in ~20% of reviews, e.g., location reference)`:'none'}.
 ${ratingLayout(rating,effectiveLanguage,keywordInjectionActive?serviceKeyword:'service',doctorName,includeDoctorName,allowEmoji,lengthBracket,keywordInjectionActive,patientName,patientLocality)}
-complaint_safety=${rating<=2?'never block, filter, soften, or praise-convert low-star feedback':'normal safe review tone'}; owner_response_hook=off.`;
+tone_adjustment=${rating<=2?'honest about friction, never soften complaints':'authentic satisfaction, not over-the-top praise'}.`;
 
     let reviews:string[]=[];
     let generationAttempts=0;
     try{
       generationAttempts=1;
+      const maxTokensPerLine=20;
+      const jsonOverhead=80;
+      const maxOutputTokens=Math.min(lengthBracket.max*maxTokensPerLine*TARGET_COUNT+jsonOverhead,800);
+      const isConversational=selectedArchetypeKey==='A'||selectedArchetypeKey==='E'||selectedArchetypeKey==='F';
+      const temperature=isConversational?0.88:0.75;
+      const topP=isConversational?0.98:0.92;
       const geminiPayload={
         contents:[{parts:[{text:structuralPrefix},{text:executionLayout}]}],
-        generationConfig:{temperature:.82,topP:.95,topK:40,maxOutputTokens:1200,responseMimeType:'application/json'},
+        generationConfig:{temperature,topP,topK:40,maxOutputTokens,responseMimeType:'application/json'},
       };
-      console.log('Gemini request',{model:GEMINI_MODEL,helper_model:HELPER_MODEL,doctor_id:doctor.id,operationalScanSequence,operationalWindowActive:opWindow.isActive,dailySequence,strategy,keywordProbability,keywordInjectionsToday,selectedArchetypeKey,lengthBracket:lengthBracket.key,personalityVariant,rating,effectiveLanguage,maxOutputTokens:1200});
+      console.log('Gemini request',{model:GEMINI_MODEL,doctor_id:doctor.id,dailySequence,strategy,keywordInjectionsToday,selectedArchetypeKey,personalityVariant,rating,effectiveLanguage,temperature,topP,maxOutputTokens});
       const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},GEMINI_TIMEOUT_MS);
       const responseText=await response.text();
       if(!response.ok){
@@ -431,7 +505,7 @@ complaint_safety=${rating<=2?'never block, filter, soften, or praise-convert low
     }
 
     if(reviews.length<TARGET_COUNT){
-      reviews=unique([...reviews,...emergencyDrafts(effectiveLanguage,rating)],TARGET_COUNT).map(review=>{
+      reviews=unique([...reviews,...emergencyDrafts(effectiveLanguage,rating,activeKeywords)],TARGET_COUNT).map(review=>{
         const withDoctor=includeDoctorName?injectDoctorName(review,doctorName,rating,effectiveLanguage,lengthBracket):shapeLines(review,rating,effectiveLanguage,lengthBracket);
         return injectPatientContext(withDoctor,patientName,patientLocality,rating,effectiveLanguage,lengthBracket);
       });
@@ -442,7 +516,7 @@ complaint_safety=${rating<=2?'never block, filter, soften, or praise-convert low
       const leaked=reviews.some(review=>blockedKeywords.some(keyword=>keyword&&normalize(review).includes(normalize(keyword))));
       if(leaked){
         console.error('Clean human output leaked structural keyword; using emergency drafts',{doctor_id:doctor.id,dailySequence});
-        reviews=emergencyDrafts(effectiveLanguage,rating).map(review=>injectPatientContext(review,patientName,patientLocality,rating,effectiveLanguage,lengthBracket));
+        reviews=emergencyDrafts(effectiveLanguage,rating,activeKeywords).map(review=>injectPatientContext(review,patientName,patientLocality,rating,effectiveLanguage,lengthBracket));
       }
     }
     reviews=reviews.map(review=>{
@@ -454,21 +528,13 @@ complaint_safety=${rating<=2?'never block, filter, soften, or praise-convert low
     const metadata={
       policy_version:'pattern-resistant-operational-window-v2',
       model:GEMINI_MODEL,
-      helper_model:HELPER_MODEL,
-      max_output_tokens:1200,
       operational_window_active:opWindow.isActive,
-      operational_window_start:opWindow.startIso,
-      operational_window_end:opWindow.endIso,
-      operational_scan_sequence:operationalScanSequence,
-      personalized_flow_probability:PERSONALIZED_FLOW_PROBABILITY,
-      personalized_flow_roll:personalizedFlowRoll,
       allow_language_step:allowLanguageStep,
       allow_detail_form:allowDetailForm,
       is_name_area_prompted:isNameAreaPrompted,
       is_language_prompted:isLanguagePrompted,
       is_doctor_name_included:includeDoctorName,
-      doctor_name_injections_today_before:doctorNameIncludedToday,
-      doctor_name_cap_daily:DOCTOR_NAME_CAP_DAILY,
+      doctor_name_injection_probability:DOCTOR_NAME_INJECTION_PROBABILITY,
       emoji_enabled:allowEmoji,
       daily_generation_sequence:dailySequence,
       strategy,

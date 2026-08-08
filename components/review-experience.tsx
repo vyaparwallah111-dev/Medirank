@@ -105,7 +105,7 @@ const titleCase = (value: string) => value.trim().split(/\s+/).map((part) => par
 const pickFallbackReviews = (language: Language) => {
   const source = fallbackReviews[language];
   const offset = Math.floor(Math.random() * source.length);
-  return Array.from({ length: 4 }, (_, index) => source[(offset + index) % source.length]);
+  return Array.from({ length: 2 }, (_, index) => source[(offset + index) % source.length]);
 };
 
 export function ReviewExperience({
