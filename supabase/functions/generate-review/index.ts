@@ -8,17 +8,20 @@ const headers={
 };
 const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers});
 const GEMINI_MODEL='gemini-2.5-flash';
-const HELPER_MODEL='gemini-3.1-flash-lite';
-const GEMINI_TIMEOUT_MS=7_000;
+const GEMINI_TIMEOUT_MS=6_000;
 const TARGET_COUNT=3;
-const DOCTOR_NAME_INJECTION_PROBABILITY=0.45;
-const DOCTOR_KEYWORD_COMBO_PROBABILITY=0.45;
 
 type KB={area_name?:unknown;city_name?:unknown;top_services?:unknown};
 type Language='english'|'hinglish';
-type Strategy='keyword_optimized'|'clean_human';
 type LengthBracket={key:string;min:number;max:number;target:number};
 type ArchetypeKey='A'|'B'|'C'|'D'|'E'|'F'|'G';
+type ClientDigest={
+  doctor_id:string;doctor_name:string;clinic_name:string;city:string;specialization:string;
+  high_priority_keywords:string[];medium_keywords:string[];low_keywords:string[];
+  selected_chips:string[];patient_concerns:string[];usp_points:string[];tone_preference:string;
+  primary_area:string;secondary_area:string|null;
+  patient_name:string;patient_locality:string;custom_notes:string;rating:number;language:Language;
+};
 const STRUCTURE_ARCHETYPES:Record<ArchetypeKey,string>={
   A:'Write as ONE flowing sentence, no formal breaks, casual run-on style. Conversational, like texting a friend.',
   B:"Start directly with the doctor's name, skip any generic opening. Focus on their personal impact.",
@@ -386,268 +389,294 @@ function emergencyDrafts(language:Language,rating=5,keywords:string[]=[]){
 Deno.serve(async(req)=>{
   let db:ReturnType<typeof createClient>|null=null;
   let doctorIdForAudit:string|null=null;
-  let fallbackLanguage:Language='english';
+  const fallbackLanguage:Language='english';
+
   if(req.method==='OPTIONS')return reply({ok:true});
   if(req.method!=='POST')return reply({reviews:emergencyDrafts(fallbackLanguage),target_count:TARGET_COUNT,quality:{fallback:true}});
-  try{
-    let body:Record<string,unknown>;
-    try{body=await req.json();fallbackLanguage=body.language==='hinglish'?'hinglish':'english'}
-    catch(error){console.error('Invalid request JSON',error);return reply({reviews:emergencyDrafts(fallbackLanguage),target_count:TARGET_COUNT,quality:{fallback:true}})}
-    const doctorId=sanitizeText(body.doctor_id,80);
-    doctorIdForAudit=doctorId||null;
-    if(!doctorId||!uuidPattern.test(doctorId))return reply({reviews:emergencyDrafts(fallbackLanguage),target_count:TARGET_COUNT,quality:{fallback:true}});
 
+  try{
+    // Parse request
+    let body:Record<string,unknown>;
+    try{body=await req.json()}
+    catch(error){console.error('Invalid JSON',error);return reply({reviews:emergencyDrafts('english'),target_count:TARGET_COUNT,quality:{fallback:true}})}
+
+    const doctorId=sanitizeText(body.doctor_id,80);
+    doctorIdForAudit=doctorId;
+    if(!doctorId||!uuidPattern.test(doctorId))return reply({reviews:emergencyDrafts('english'),target_count:TARGET_COUNT,quality:{fallback:true}});
+
+    // Initialize DB
     const url=Deno.env.get('SUPABASE_URL'),serviceKey=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),geminiKey=Deno.env.get('GEMINI_API_KEY');
     if(!url||!serviceKey||!geminiKey){
-      console.error('Missing Edge Function secrets',{hasUrl:!!url,hasServiceKey:!!serviceKey,hasGeminiKey:!!geminiKey});
-      return reply({reviews:emergencyDrafts(fallbackLanguage),target_count:TARGET_COUNT,quality:{fallback:true}});
+      console.error('Missing secrets');
+      return reply({reviews:emergencyDrafts('english'),target_count:TARGET_COUNT,quality:{fallback:true}});
     }
     db=createClient(url,serviceKey);
-    const [doctorResult,aiSettingsResult]=await Promise.allSettled([
-      db.from('doctors').select('id,doctor_name,clinic_name,city,specialization,knowledge_base,latitude,longitude').eq('id',doctorId).eq('is_active',true).maybeSingle(),
-      db.from('doctor_ai_settings').select('target_keywords,target_areas,patient_concerns,usp_points,tone_preference').eq('doctor_id',doctorId).maybeSingle(),
-    ]);
-    const {data:doctor,error:doctorError}=doctorResult.status==='fulfilled'?doctorResult.value:{data:null,error:doctorResult.reason};
-    if(doctorError){void logSystemError(db,doctorId,doctorError.message||'Doctor lookup failed');return reply({reviews:emergencyDrafts(fallbackLanguage),target_count:TARGET_COUNT,quality:{fallback:true}})}
-    if(!doctor){void logSystemError(db,doctorId,'Clinic not found or inactive');return reply({reviews:emergencyDrafts(fallbackLanguage),target_count:TARGET_COUNT,quality:{fallback:true}})}
-    const aiSettings=aiSettingsResult.status==='fulfilled'?aiSettingsResult.value.data:null;
 
-    const deviceToken=sanitizeText(body.device_token,128);
-    if(!deviceToken)return reply({error:'Unable to verify this device. Please refresh and try again.'},400);
-    const browserSignature=(req.headers.get('user-agent')||'unknown').slice(0,300);
-    const fingerprintHash=await sha256(`${doctor.id}|${deviceToken}|${browserSignature}`);
-    const rawScanId=sanitizeText(body.scan_id,80);
-    const scanId=uuidPattern.test(rawScanId)?rawScanId:'';
-    const patientLatitude=typeof body.latitude==='number'?body.latitude:NaN,patientLongitude=typeof body.longitude==='number'?body.longitude:NaN;
-    const hasPatientLocation=Number.isFinite(patientLatitude)&&Number.isFinite(patientLongitude)&&patientLatitude>=-90&&patientLatitude<=90&&patientLongitude>=-180&&patientLongitude<=180;
-    const hasClinicLocation=Number.isFinite(doctor.latitude)&&Number.isFinite(doctor.longitude);
-    let locationVerified:boolean|null=null,distanceMeters:number|null=null;
-    if(hasPatientLocation&&hasClinicLocation){distanceMeters=Math.round(haversine(patientLatitude,patientLongitude,Number(doctor.latitude),Number(doctor.longitude)));locationVerified=distanceMeters<=500}
-
-    const opWindow=operationalWindow();
-    const suppliedPatientName=normalizeHumanInput(body.patient_name,60,'name');
-    const suppliedPatientLocality=normalizeHumanInput(body.patient_locality,60,'locality');
-    const operationalScanSequence=0;
-    const allowLanguageStep=true;
-    const allowDetailForm=Math.random()<0.55;
-    if(body.precheck_only===true)return reply({allowed:true,location_verified:locationVerified,distance_meters:distanceMeters,routing:{operational_scan_sequence:operationalScanSequence,operational_window_active:opWindow.isActive,operational_window_start:opWindow.startIso,operational_window_end:opWindow.endIso,allow_language_step:allowLanguageStep,allow_detail_form:allowDetailForm}});
-
-    const effectiveLanguage:Language=body.language==='hinglish'?'hinglish':'english';
-    fallbackLanguage=effectiveLanguage;
+    // Build ClientDigest - fetch all data in parallel
+    const language:Language=body.language==='hinglish'?'hinglish':'english';
     const rating=Math.min(5,Math.max(1,Math.round(Number(body.rating)||5)));
-    const kb=(doctor.knowledge_base&&typeof doctor.knowledge_base==='object'?doctor.knowledge_base:{}) as KB;
-    const primaryArea=sanitizeText(body.primary_area,80)||sanitizeText(kb.area_name,80)||sanitizeText(doctor.city,80);
-    const patientName=suppliedPatientName;
-    const patientLocality=suppliedPatientLocality;
+    const deviceToken=sanitizeText(body.device_token,128);
+    if(!deviceToken)return reply({error:'Unable to verify device'},400);
+
+    // Precheck - return routing info quickly
+    if(body.precheck_only===true){
+      return reply({
+        allowed:true,
+        routing:{
+          operationalScanSequence:0,
+          operationalWindowActive:operationalWindow().isActive,
+          operationalWindowStart:operationalWindow().startIso,
+          operationalWindowEnd:operationalWindow().endIso,
+          allowLanguageStep:true,
+          allowDetailForm:Math.random()<0.40,
+        }
+      });
+    }
+
+    const [doctorResult,aiSettingsResult,keywordsResult,recentReviewsResult]=await Promise.allSettled([
+      db.from('doctors').select('id,doctor_name,clinic_name,city,specialization,knowledge_base').eq('id',doctorId).eq('is_active',true).maybeSingle(),
+      db.from('doctor_ai_settings').select('*').eq('doctor_id',doctorId).maybeSingle(),
+      db.from('doctor_keywords').select('keyword').eq('doctor_id',doctorId),
+      db.from('generated_reviews').select('content').eq('doctor_id',doctorId).order('created_at',{ascending:false}).limit(15),
+    ]);
+
+    const doctor=(doctorResult.status==='fulfilled'?doctorResult.value.data:null);
+    if(!doctor){
+      console.error('Doctor not found');
+      void logSystemError(db,doctorId,'Doctor not found or inactive');
+      return reply({reviews:emergencyDrafts(language),target_count:TARGET_COUNT,quality:{fallback:true}});
+    }
+
+    const aiSettings=aiSettingsResult.status==='fulfilled'?aiSettingsResult.value.data:null;
+    const keywordRows=(keywordsResult.status==='fulfilled'?keywordsResult.value.data:[]) as Array<{keyword:unknown}>;
+    const recentReviews=(recentReviewsResult.status==='fulfilled'?recentReviewsResult.value.data:[]) as Array<{content:unknown}>;
+
+    // Build keyword hierarchy
+    const priorityKeywords=selectPriorityKeywords(aiSettings,unique(keywordRows.map(r=>sanitizeText(r.keyword,80)).filter(Boolean)));
+    const mergedKeywords=mergeKeywordsByPriority(priorityKeywords,unique(keywordRows.map(r=>sanitizeText(r.keyword,80)).filter(Boolean)));
+
+    // User selections this session
+    const selectedChips=unique([...list(body.selected_chips,80),...list(body.selected_keywords,80),...list(body.selected_experiences,80),sanitizeText(body.selected_chip,80)].filter(Boolean),5);
+    const patientName=normalizeHumanInput(body.patient_name,60,'name');
+    const patientLocality=normalizeHumanInput(body.patient_locality,60,'locality');
     const customNotes=sanitizeText(body.custom_notes,240);
 
-    const {data:keywordRows,error:keywordError}=await db.from('doctor_keywords').select('keyword,category').eq('doctor_id',doctor.id).order('created_at');
-    if(keywordError)console.error('Doctor keyword lookup failed; continuing with supplied chips only',keywordError);
-    const dashboardKeywords=unique((keywordRows||[]).map(row=>sanitizeText(row.keyword,80)),20);
-    const priorityKeywords=selectPriorityKeywords(aiSettings,dashboardKeywords);
-    const mergedKeywords=mergeKeywordsByPriority(priorityKeywords,dashboardKeywords);
-    const allAvailableKeywords=unique([...mergedKeywords.high,...mergedKeywords.medium,...mergedKeywords.low],30);
-    const allowedKeywords=new Set(allAvailableKeywords.map(normalize));
-    const requestedChips=unique([...list(body.selected_chips,80),...list(body.selected_keywords,80),...list(body.selected_experiences,80),sanitizeText(body.selected_chip,80)].filter(Boolean),5)
-      .filter(item=>!allowedKeywords.size||allowedKeywords.has(normalize(item)));
-    const selectedChips=requestedChips.length?requestedChips:pickKeywordsByPriority(mergedKeywords,0);
-    const serviceKeyword=selectedChips[0]||mergedKeywords.high[0]||mergedKeywords.medium[0]||'service';
-    const doctorName=sanitizeText(doctor.doctor_name,100);
-    const clinicName=sanitizeText(doctor.clinic_name,120);
-    const includeDoctorName=Math.random()<DOCTOR_NAME_INJECTION_PROBABILITY;
-    const includeDocKeywordCombo=Math.random()<DOCTOR_KEYWORD_COMBO_PROBABILITY;
-    const isNameAreaPrompted=allowDetailForm;
-    const isLanguagePrompted=allowLanguageStep;
-    const allowEmoji=rating>=4&&Math.random()<.45;
+    // Build ClientDigest
+    const kb=(doctor.knowledge_base&&typeof doctor.knowledge_base==='object'?doctor.knowledge_base:{}) as KB;
+    const digest:ClientDigest={
+      doctor_id:doctorId,
+      doctor_name:sanitizeText(doctor.doctor_name,100),
+      clinic_name:sanitizeText(doctor.clinic_name,120),
+      city:sanitizeText(doctor.city,80),
+      specialization:sanitizeText(doctor.specialization,80),
+      high_priority_keywords:mergedKeywords.high.slice(0,3),
+      medium_keywords:mergedKeywords.medium.slice(0,3),
+      low_keywords:mergedKeywords.low.slice(0,2),
+      selected_chips:selectedChips.length?selectedChips:mergedKeywords.high.slice(0,2),
+      patient_concerns:jsonList(aiSettings?.patient_concerns||[]),
+      usp_points:jsonList(aiSettings?.usp_points||[]),
+      tone_preference:sanitizeText(aiSettings?.tone_preference,40),
+      primary_area:sanitizeText(body.primary_area,80)||sanitizeText(kb.area_name,80)||sanitizeText(doctor.city,80),
+      secondary_area:(Math.random()<0.25&&aiSettings?.target_areas?.secondary)?sanitizeText(jsonList(aiSettings.target_areas.secondary)[0],80):null,
+      patient_name:patientName,
+      patient_locality:patientLocality,
+      custom_notes:customNotes,
+      rating,
+      language,
+    };
+
+    // Build unified prompt
     const lengthBracket=selectLengthBracket(rating);
-
-    const dailyCountResult=await db.from('review_generation_events').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).order('created_at',{ascending:false}).limit(50);
-    if(dailyCountResult.error)console.error('Recent generation lookup failed',dailyCountResult.error);
-    const dailySequence=(dailyCountResult.count??0)+1;
-    const keywordInjectionActive=selectedChips.length>=2;
-    const strategy:Strategy='keyword_optimized';
-    const treatmentChips=selectedChips.filter(chip=>allAvailableKeywords.some(ak=>normalize(ak)===normalize(chip)));
-    const doctorCombos=includeDocKeywordCombo&&doctorName?treatmentChips.slice(0,2).map(chip=>doctorKeywordCombo(doctorName,chip,effectiveLanguage)):[];
-    const selectedConcern=selectPatientConcern(aiSettings,rating);
-    const selectedUSP=selectUSPPoint(aiSettings);
-    const secondaryArea=(Math.random()<0.25&&aiSettings?.target_areas?.secondary?.length>0)?jsonList(aiSettings.target_areas.secondary)[0]:null;
-    const injectionKeywords=keywordInjectionActive?unique([clinicName,primaryArea,patientLocality,...selectedChips,...doctorCombos,...allAvailableKeywords,...(selectedUSP?[selectedUSP]:[]),...(secondaryArea?[secondaryArea]:[])],15):[];
-    const blockedKeywords=!keywordInjectionActive?unique([clinicName,...(!includeDoctorName?[doctorName]:[]),primaryArea,...selectedChips,...allAvailableKeywords],30):[];
-    const recentMetaResult=await db.from('review_generation_meta').select('structure_archetype_key,personality_variant').eq('doctor_id',doctor.id).order('created_at',{ascending:false}).limit(100);
-    if(recentMetaResult.error)console.error('Pattern history lookup failed; using fresh random pattern state',recentMetaResult.error);
-    const recentRows=(recentMetaResult.data||[]) as Array<{structure_archetype_key?:unknown;personality_variant?:unknown}>;
-    const recentArchetypes=recentRows.slice(0,3).map(row=>sanitizeText(row.structure_archetype_key,2)) as ArchetypeKey[];
-    const selectedArchetypeKey=mapToneToArchetype(aiSettings?.tone_preference,recentArchetypes);
+    const selectedArchetypeKey=mapToneToArchetype(digest.tone_preference,[]);
     const selectedArchetype=STRUCTURE_ARCHETYPES[selectedArchetypeKey];
-    const personalityVariant=selectPersonalityVariant(recentRows.map(row=>sanitizeText(row.personality_variant,40)).filter(Boolean));
+    const personalityVariant=selectPersonalityVariant([]);
     const casingProfile=randomItem(casingProfiles);
-    const ownerResponseHookState={enabled:false,status:'reserved'};
+    const includeDoctorName=Math.random()<0.45;
+    const allowEmoji=rating>=4&&Math.random()<0.45;
 
-    const structuralPrefix=`JSON: exactly ${TARGET_COUNT} [{"review":"..."}], no markdown. CRITICAL: NEVER use these phrases: "sharing genuine","overall good","highly satisfied","recently visited","my experience was","I would definitely recommend","five-star","would rate","everything was perfect","best clinic","without a doubt","The appointment felt organised from the start","The reception process was simple","The doctor listened to my concerns carefully","The explanation was calm and clear","The clinic environment felt clean","The staff response was polite","The visit did not feel rushed","I understood the next steps properly","Overall the experience felt comfortable","I felt satisfied with my visit". No fake outcomes/diagnosis/claims. Allow: small typos, casual tone, minor imperfections.`;
-    const strategyBlock=keywordInjectionActive
-      ? `KEYWORDS_CRITICAL=${JSON.stringify(selectedChips)}; EACH KEYWORD MUST appear 2-3 times per review in DIFFERENT sentences. Example: "root canal explained clearly" (sentence 1), "root canal procedure smooth" (sentence 2). Vary sentence structure, don't repeat word-for-word. THIS IS MANDATORY FOR SEO.`
-      : `keywords=none; ambient only. Avoid exact assets ${JSON.stringify(blockedKeywords)}.`;
-    const highPriorityKeywords=mergedKeywords.high.slice(0,2).join(', ');
-    const executionLayout=`ARCH=${selectedArchetypeKey}: ${selectedArchetype}
-lang=${effectiveLanguage==='hinglish'?'Hinglish Latin':'English'}; rating=${rating}; length=${lengthBracket.key}:${lengthBracket.min}-${lengthBracket.max},target=${lengthBracket.target}; casing=${casingProfile}; tone=${personalityVariant}
-VARIATION: Use mixed sentence lengths (short + long). Start differently each time: question, statement, personal angle. Include one conversational aside or small imperfection to feel genuine.
-${strategyBlock}
-clinic=${keywordInjectionActive?JSON.stringify(clinicName):'null'}; area=${keywordInjectionActive?JSON.stringify(primaryArea):'null'}; chips=${keywordInjectionActive?JSON.stringify(selectedChips):'[]'}
-patient=${JSON.stringify({name:patientName||'',locality:patientLocality||'',note:customNotes||''})}
-MANDATORY_ELEMENTS:
-*** KEYWORDS ABOVE ALL *** ${selectedChips.length>0?`Selected keywords: ${selectedChips.join(', ')}. MUST appear 2+ times EACH in different sentences.`:''}
-high_priority=[${highPriorityKeywords}] (GUARANTEED inclusion, mention at least 2x per review in different contexts);
-concern=${selectedConcern?`"${selectedConcern}" (subtly address if 4-5 star)`:'none'};
-usp=${selectedUSP?`"${selectedUSP}" (mention 1x naturally if relevant)`:'none'};
-secondary_area=${secondaryArea?`"${secondaryArea}" (20% mention rate)`:'none'}.
-${ratingLayout(rating,effectiveLanguage,keywordInjectionActive?serviceKeyword:'service',doctorName,includeDoctorName,allowEmoji,lengthBracket,keywordInjectionActive,patientName,patientLocality)}
-tone_adjustment=${rating<=2?'honest about friction, never soften complaints':'authentic satisfaction, not over-the-top praise'}.`;
+    const allKeywords=unique([...digest.high_priority_keywords,...digest.medium_keywords,...digest.low_keywords,...digest.selected_chips],10);
+    const selectedConcern=rating>=4&&digest.patient_concerns.length?randomItem(digest.patient_concerns):null;
+    const selectedUSP=digest.usp_points.length?randomItem(digest.usp_points):null;
 
-    let reviews:string[]=[];
-    let generationAttempts=0;
-    try{
-      generationAttempts=1;
-      const maxTokensPerLine=20;
-      const jsonOverhead=100;
-      const maxOutputTokens=Math.min(lengthBracket.max*maxTokensPerLine*TARGET_COUNT+jsonOverhead,1200);
-      const isConversational=selectedArchetypeKey==='A'||selectedArchetypeKey==='E'||selectedArchetypeKey==='F';
-      const temperature=isConversational?0.88:0.75;
-      const topP=isConversational?0.98:0.92;
-      const geminiPayload={
-        contents:[{parts:[{text:structuralPrefix},{text:executionLayout}]}],
-        generationConfig:{temperature,topP,topK:40,maxOutputTokens,responseMimeType:'application/json'},
-      };
-      console.log('Gemini request',{model:GEMINI_MODEL,doctor_id:doctor.id,dailySequence,strategy,keywordInjectionActive,selectedChipsCount:selectedChips.length,selectedArchetypeKey,personalityVariant,rating,effectiveLanguage,temperature,topP,maxOutputTokens});
-      const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},GEMINI_TIMEOUT_MS);
-      const responseText=await response.text();
-      if(!response.ok){
-        console.error('Gemini HTTP error',{model:GEMINI_MODEL,status:response.status,body:responseText.slice(0,1000)});
-        void logSystemError(db,doctor.id,`Gemini HTTP ${response.status}: ${responseText.slice(0,500)}`);
-      }else{
-        let envelope:unknown;
-        try{envelope=JSON.parse(responseText)}
-        catch(error){throw new Error(`Gemini envelope JSON parse failed: ${error instanceof Error?error.message:String(error)}`)}
-        const parts=(envelope as {candidates?:Array<{content?:{parts?:Array<{text?:unknown}>}}>})?.candidates?.[0]?.content?.parts;
-        if(!Array.isArray(parts))throw new Error('Gemini envelope missing candidate content parts');
-        const modelText=parts.map(part=>typeof part.text==='string'?part.text:'').filter(Boolean).join('\n\n');
-        const strictDrafts=parseReviews(modelText,TARGET_COUNT);
-        if(strictDrafts.length!==TARGET_COUNT)throw new Error('Gemini response violated strict JSON object-map contract');
-        for(const review of strictDrafts){
-          const isDuplicate=await checkDuplicateRisk(db,doctorId,review);
-          if(isDuplicate){
-            console.warn('Generated review opening line similar to recent reviews; will use fallback');
-            reviews=emergencyDrafts(effectiveLanguage,rating,selectedChips);
-            break;
-          }
+    // Blocked phrases
+    const blockedPhrases=[
+      'sharing genuine','overall good','highly satisfied','recently visited','my experience was',
+      'I would definitely recommend','five-star','would rate','everything was perfect','best clinic',
+      'without a doubt','The appointment felt organised from the start','The reception process was simple',
+      'The doctor listened to my concerns carefully','The explanation was calm and clear',
+      'The clinic environment felt clean','The staff response was polite','The visit did not feel rushed',
+      'I understood the next steps properly','Overall the experience felt comfortable','I felt satisfied with my visit'
+    ];
+
+    const prompt=`You are a Google review generator for a clinic. Generate exactly ${TARGET_COUNT} authentic patient reviews.
+
+CLINIC CONTEXT:
+- Doctor: ${digest.doctor_name}
+- Clinic: ${digest.clinic_name}
+- Location: ${digest.primary_area}${digest.secondary_area?`, also serves ${digest.secondary_area}`:''}
+- Specialization: ${digest.specialization}
+
+RATING: ${rating} star${rating!==1?'s':''}
+LANGUAGE: ${digest.language==='hinglish'?'Hinglish (mix Hindi & English)':'English'}
+LENGTH: ${lengthBracket.min}-${lengthBracket.max} lines per review, target ${lengthBracket.target}
+STYLE: ${selectedArchetype}
+TONE: ${personalityVariant}
+CASING: ${casingProfile}
+
+KEYWORDS (MANDATORY - MUST appear 2+ times per review in different sentences):
+${digest.high_priority_keywords.map((kw,i)=>`- HIGH PRIORITY ${i+1}: "${kw}" (use in every review, naturally)`).join('\n')}
+${digest.selected_chips.length?digest.selected_chips.map((kw,i)=>`- SELECTED ${i+1}: "${kw}"`).join('\n'):''}
+
+REQUIREMENTS:
+1. Each keyword marked HIGH PRIORITY must appear 2-3 times per review in different sentences
+2. Use selected keywords naturally in context
+3. ${digest.patient_name&&digest.patient_locality?`Naturally include exact name "${digest.patient_name}" and locality "${digest.patient_locality}" (use varied placements: opening, middle, or end - NOT always "I am X from Y")`:`Patient context: ${digest.patient_name?`include name "${digest.patient_name}"`:''}${digest.patient_locality?`include locality "${digest.patient_locality}"`:''}. Vary placement patterns.`}
+4. ${includeDoctorName?`Include doctor name "${digest.doctor_name}" naturally in ~50% of reviews, combined with a treatment keyword`:'Do not mention any doctor name'}
+5. ${selectedConcern?`Subtly address: "${selectedConcern}" (only for positive tone)`:''}
+6. ${selectedUSP?`Naturally mention: "${selectedUSP}" (once if relevant)`:''}
+7. Real patient voice - no robotic lists, natural flow, varying sentence lengths
+8. ${allowEmoji?'Allow max 1 contextual emoji per review (👍 🦷 ⭐)':"No emoji"}
+9. NEVER use these exact phrases: ${blockedPhrases.map(p=>`"${p}"`).join(', ')}
+10. Rating must match tone: ${rating===1?'honest complaints':''}${rating===2?'disappointed but fair':''}${rating===3?'neutral/mixed':''}${rating>=4?'positive & authentic':''}
+
+OUTPUT FORMAT:
+Return exactly ${TARGET_COUNT} reviews as JSON:
+[
+  {"review": "review text here"},
+  {"review": "review text here"},
+  {"review": "review text here"}
+]
+`;
+
+    // Call Gemini
+    console.log('Generating reviews for',{doctor_id:doctorId,rating,language,keywords:digest.high_priority_keywords});
+    const geminiPayload={
+      contents:[{parts:[{text:prompt}]}],
+      generationConfig:{
+        temperature:0.85,
+        topP:0.95,
+        topK:40,
+        maxOutputTokens:Math.min(lengthBracket.max*25*TARGET_COUNT+100,2000),
+        responseMimeType:'application/json',
+      },
+    };
+
+    const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},GEMINI_TIMEOUT_MS);
+
+    if(!response.ok){
+      const errText=await response.text();
+      console.error('Gemini error',{status:response.status,text:errText.slice(0,500)});
+      void logSystemError(db,doctorId,`Gemini ${response.status}: ${errText.slice(0,300)}`);
+      const fallback=emergencyDrafts(language,rating,digest.selected_chips);
+      return reply({reviews:fallback,target_count:TARGET_COUNT,quality:{fallback:true}});
+    }
+
+    const envelope=await response.json() as any;
+    const parts=envelope?.candidates?.[0]?.content?.parts;
+    if(!Array.isArray(parts)){
+      console.error('Invalid Gemini response structure');
+      const fallback=emergencyDrafts(language,rating,digest.selected_chips);
+      return reply({reviews:fallback,target_count:TARGET_COUNT,quality:{fallback:true}});
+    }
+
+    const modelText=parts.map((p:any)=>typeof p.text==='string'?p.text:'').filter(Boolean).join('\n');
+    let reviews=parseReviews(modelText,TARGET_COUNT);
+
+    // Lightweight duplicate check - only check first line
+    if(reviews.length===TARGET_COUNT){
+      const recentFirstLines=recentReviews.map(r=>{
+        const firstLine=(typeof r.content==='string'?r.content:'').split(/\n/)[0]?.toLowerCase()||'';
+        return firstLine.split(/\s+/).slice(0,6).join(' ');
+      });
+
+      for(let i=0;i<reviews.length;i++){
+        const newFirstLine=reviews[i].split(/\n/)[0]?.toLowerCase().split(/\s+/).slice(0,6).join(' ')||'';
+        let isDuplicate=false;
+        for(const recentLine of recentFirstLines){
+          const common=newFirstLine.split(/\s+/).filter(w=>recentLine.includes(w)).length;
+          const similarity=common/Math.max(newFirstLine.split(/\s+/).length,1);
+          if(similarity>0.65){isDuplicate=true;break}
         }
-        if(reviews.length===0){
-          reviews=strictDrafts.map(review=>{
-            const withDoctor=includeDoctorName?injectDoctorName(review,doctorName,rating,effectiveLanguage,lengthBracket):shapeLines(review,rating,effectiveLanguage,lengthBracket);
-            return injectPatientContext(withDoctor,patientName,patientLocality,rating,effectiveLanguage,lengthBracket);
-          });
+        if(isDuplicate){
+          console.log('Review',i,'flagged as duplicate, retrying');
+          const retryPayload={...geminiPayload};
+          retryPayload.contents[0].parts.push({text:`This review was too similar to recent ones. Generate a DIFFERENT opening line while keeping keywords "${digest.high_priority_keywords.join(', ')}" (2+ times each).`});
+          try{
+            const retryResponse=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(retryPayload)},GEMINI_TIMEOUT_MS);
+            if(retryResponse.ok){
+              const retryEnvelope=await retryResponse.json() as any;
+              const retryParts=retryEnvelope?.candidates?.[0]?.content?.parts;
+              if(Array.isArray(retryParts)){
+                const retryText=retryParts.map((p:any)=>typeof p.text==='string'?p.text:'').filter(Boolean).join('\n');
+                const retryReviews=parseReviews(retryText,1);
+                if(retryReviews.length===1){reviews[i]=retryReviews[0]}
+              }
+            }
+          }catch(error){console.log('Retry failed, using original')}
         }
       }
-    }catch(error){
-      const message=error instanceof Error?error.message:String(error);
-      console.error('Gemini request failed',{model:GEMINI_MODEL,error:message});
-      void logSystemError(db,doctor.id,message);
     }
 
+    // Fallback if not enough reviews
     if(reviews.length<TARGET_COUNT){
-      reviews=unique([...reviews,...emergencyDrafts(effectiveLanguage,rating,selectedChips)],TARGET_COUNT).map(review=>{
-        const withDoctor=includeDoctorName?injectDoctorName(review,doctorName,rating,effectiveLanguage,lengthBracket):shapeLines(review,rating,effectiveLanguage,lengthBracket);
-        return injectPatientContext(withDoctor,patientName,patientLocality,rating,effectiveLanguage,lengthBracket);
-      });
+      reviews=[...reviews,...emergencyDrafts(language,rating,digest.selected_chips)].slice(0,TARGET_COUNT);
     }
-    reviews=reviews.slice(0,TARGET_COUNT);
 
+    // Post-processing (name/area injection, doctor name injection)
     reviews=reviews.map(review=>{
-      const withDoctor=includeDoctorName?injectDoctorName(review,doctorName,rating,effectiveLanguage,lengthBracket):shapeLines(review,rating,effectiveLanguage,lengthBracket);
-      return injectPatientContext(withDoctor,patientName,patientLocality,rating,effectiveLanguage,lengthBracket);
+      let processed=review;
+      if(includeDoctorName&&!normalize(processed).includes(normalize(digest.doctor_name))){
+        processed=injectDoctorName(processed,digest.doctor_name,rating,language,lengthBracket);
+      }
+      if((digest.patient_name||digest.patient_locality)&&!normalize(processed).includes(normalize(digest.patient_name+' '+digest.patient_locality))){
+        processed=injectPatientContext(processed,digest.patient_name,digest.patient_locality,rating,language,lengthBracket);
+      }
+      return processed;
     });
-    const firstFourWordSample=reviews.length?firstFourWords(reviews[0]):'';
 
+    // Save metadata
     const metadata={
-      policy_version:'pattern-resistant-operational-window-v2',
       model:GEMINI_MODEL,
-      operational_window_active:opWindow.isActive,
-      allow_language_step:allowLanguageStep,
-      allow_detail_form:allowDetailForm,
-      is_name_area_prompted:isNameAreaPrompted,
-      is_language_prompted:isLanguagePrompted,
-      is_doctor_name_included:includeDoctorName,
-      doctor_name_injection_probability:DOCTOR_NAME_INJECTION_PROBABILITY,
-      emoji_enabled:allowEmoji,
-      daily_generation_sequence:dailySequence,
-      strategy,
-      keyword_injection_active:keywordInjectionActive,
-      keyword_injection_assets:injectionKeywords,
-      selected_chips:selectedChips,
-      doctor_combos_included:includeDocKeywordCombo,
-      length_bracket:lengthBracket.key,
-      length_min:lengthBracket.min,
-      length_max:lengthBracket.max,
-      length_target:lengthBracket.target,
-      structure_archetype_key:selectedArchetypeKey,
-      structure_archetype:selectedArchetype,
-      first_four_words:firstFourWordSample,
-      personality_variant:personalityVariant,
-      casing_profile:casingProfile,
-      owner_response_hook_state:ownerResponseHookState,
-      actual_patient_rating:rating,
-      generated_rating:rating,
-      selected_chips: selectedChips,
-      primary_area: primaryArea || null,
-      patient_name_active: !!patientName,
-      patient_locality_active: !!patientLocality,
-      location_verified:locationVerified,
-      distance_meters:distanceMeters,
-      generation_attempts:generationAttempts,
+      doctor_id:doctorId,
+      rating,
+      language,
+      target_count:TARGET_COUNT,
+      review_count:reviews.length,
+      archetype:selectedArchetypeKey,
+      personality:personalityVariant,
+      keywords_high:digest.high_priority_keywords,
+      keywords_selected:digest.selected_chips,
+      doctor_name_included:includeDoctorName,
+      patient_context_included:!!digest.patient_name||!!digest.patient_locality,
     };
-    try{
-      const rows=reviews.map(content=>({doctor_id:doctor.id,content,embedding:null,generation_metadata:metadata}));
-      const {error}=await db.from('generated_reviews').insert(rows);
-      if(error)console.error('Generated review persistence failed; returning drafts anyway',error);
-    }catch(error){console.error('Generated review persistence threw; returning drafts anyway',error)}
 
-    const generatedAt=new Date().toISOString();
+    // Persist reviews
+    try{
+      const rows=reviews.map(content=>({doctor_id:doctorId,content,embedding:null,generation_metadata:metadata}));
+      const {error}=await db.from('generated_reviews').insert(rows);
+      if(error)console.error('Persist failed',error);
+    }catch(error){console.error('Persist threw',error)}
+
+    // Persist metadata
     try{
       const {error}=await db.from('review_generation_meta').insert({
-        doctor_id:doctor.id,
-        scan_id:scanId||null,
-        fingerprint_hash:fingerprintHash,
+        doctor_id:doctorId,
         rating,
-        is_name_area_prompted:isNameAreaPrompted,
-        is_language_prompted:isLanguagePrompted,
-        is_doctor_name_included:includeDoctorName,
-        language:effectiveLanguage,
-        strategy,
-        keyword_injection_active:keywordInjectionActive,
-        length_bracket:lengthBracket.key,
+        language,
         structure_archetype_key:selectedArchetypeKey,
         structure_archetype:selectedArchetype,
-        first_four_words:firstFourWordSample,
         personality_variant:personalityVariant,
         casing_profile:casingProfile,
-        owner_response_hook_state:ownerResponseHookState,
-        created_at:generatedAt,
+        created_at:new Date().toISOString(),
       });
-      if(error)console.error('Review generation meta insert failed; continuing',error);
-    }catch(error){console.error('Review generation meta insert threw; continuing',error)}
-    try{
-      const {error}=await db.from('review_generation_events').insert({doctor_id:doctor.id,fingerprint_hash:fingerprintHash,personality:personalityVariant,location_verified:locationVerified,distance_meters:distanceMeters,created_at:generatedAt});
-      if(error)console.error('Generation event audit insert failed; continuing',error);
-    }catch(error){console.error('Generation event audit insert threw; continuing',error)}
-    try{
-      const fingerprintAudit={doctor_id:doctor.id,fingerprint_hash:fingerprintHash,location_verified:locationVerified,distance_meters:distanceMeters,generated_at:generatedAt};
-      const {error}=await db.from('device_fingerprints').upsert(fingerprintAudit,{onConflict:'doctor_id,fingerprint_hash'});
-      if(error)console.error('Device fingerprint audit upsert failed; continuing',error);
-    }catch(error){console.error('Device fingerprint audit upsert threw; continuing',error)}
+      if(error)console.error('Meta persist failed',error);
+    }catch(error){console.error('Meta persist threw',error)}
 
-    return reply({reviews,target_count:TARGET_COUNT,quality:{...metadata,routing:{operational_scan_sequence:operationalScanSequence,operational_window_active:opWindow.isActive,operational_window_start:opWindow.startIso,operational_window_end:opWindow.endIso,allow_language_step:allowLanguageStep,allow_detail_form:allowDetailForm}}});
+    return reply({reviews,target_count:TARGET_COUNT,quality:{...metadata}});
+
   }catch(error){
-    console.error('Unhandled generate-review error; returning emergency drafts',error);
+    console.error('Unhandled error',error);
     void logSystemError(db,doctorIdForAudit,error instanceof Error?error.message:String(error));
-    return reply({reviews:emergencyDrafts(fallbackLanguage),target_count:TARGET_COUNT,quality:{fallback:true,generation_attempts:0}});
+    return reply({reviews:emergencyDrafts('english'),target_count:TARGET_COUNT,quality:{fallback:true}});
   }
 });

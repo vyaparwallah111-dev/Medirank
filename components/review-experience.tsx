@@ -314,10 +314,10 @@ export function ReviewExperience({
       if (!response.ok) console.error("generate-review non-ok response", { status: response.status, body: responseText });
       let data: Record<string, unknown> = {};
       try { data = responseText ? JSON.parse(responseText) as Record<string, unknown> : {}; } catch (error) { console.error("generate-review invalid JSON response", error); }
-      const returned = Array.isArray(data.reviews) ? data.reviews.filter((review: unknown): review is string => typeof review === "string" && review.trim().length > 0).map((review) => review.trim()).slice(0, 4) : [];
+      const returned = Array.isArray(data.reviews) ? data.reviews.filter((review: unknown): review is string => typeof review === "string" && review.trim().length > 0).map((review) => review.trim()).slice(0, 3) : [];
       const quality = data.quality && typeof data.quality === "object" ? data.quality as Record<string, unknown> : {};
       setReviewRating(typeof quality.generated_rating === "number" ? quality.generated_rating : ratingOverride);
-      setReviews(!response.ok || returned.length < 2 ? fallback : returned);
+      setReviews(!response.ok || returned.length < 3 ? fallback : returned);
       scrollDraftsIntoView();
       const supabase = createClient();
       if (supabase && analyticsScanIdRef.current) void supabase.functions.invoke("mark-scan", { body: { scan_id: analyticsScanIdRef.current, event: "generated" } });
