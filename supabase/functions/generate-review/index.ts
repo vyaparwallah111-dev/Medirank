@@ -330,16 +330,13 @@ function injectPatientContext(content:string,patientName:string,patientLocality:
 async function checkDuplicateRisk(db:ReturnType<typeof createClient>,doctorId:string,newReviewOpeningLine:string){
   const recentResult=await db.from('generated_reviews').select('content').eq('doctor_id',doctorId).order('created_at',{ascending:false}).limit(20);
   if(recentResult.error||!recentResult.data)return false;
-  const newNorm=normalize(newReviewOpeningLine.split(/\n/)[0]||'');
-  if(!newNorm||newNorm.length<5)return false;
+  const newOpeningWords=newReviewOpeningLine.split(/\n/)[0]?.split(/\s+/).slice(0,8).join(' ')?.toLowerCase()||'';
+  if(!newOpeningWords||newOpeningWords.length<10)return false;
   for(const row of recentResult.data){
     const content=typeof row.content==='string'?row.content:'';
-    const recentNorm=normalize(content.split(/\n/)[0]||'');
-    if(!recentNorm)continue;
-    const commonWords=newNorm.split(/\s+/).filter(w=>recentNorm.includes(w)).length;
-    const newWords=newNorm.split(/\s+/).length;
-    const similarity=newWords>0?commonWords/newWords:0;
-    if(similarity>=0.65)return true;
+    const recentOpening=content.split(/\n/)[0]?.toLowerCase()||'';
+    if(!recentOpening)continue;
+    if(recentOpening===newOpeningWords)return true;
   }
   return false;
 }
