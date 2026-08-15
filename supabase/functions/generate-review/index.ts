@@ -342,35 +342,43 @@ async function checkDuplicateRisk(db:ReturnType<typeof createClient>,doctorId:st
 }
 
 function emergencyDrafts(language:Language,rating=5,keywords:string[]=[]){
-  const keywordHint=keywords.length>0?keywords[0]:'service';
+  const keywordList=keywords.length>0?keywords:['service'];
+  const getKeywordPhrase=()=>{
+    if(keywordList.length===1)return keywordList[0];
+    if(keywordList.length===2)return `${keywordList[0]} and ${keywordList[1]}`;
+    return `${keywordList.slice(0,-1).join(', ')}, and ${keywordList[keywordList.length-1]}`;
+  };
+  const kw1=keywordList[0]||'service';
+  const kw2=keywordList[1]||keywordList[0]||'treatment';
+  const allKw=getKeywordPhrase();
   if(rating<=2){
     const seeds=language==='hinglish'
       ? [
-        `Visit se expectations meet nahi hui.\n${keywordHint} mein kuch issues the.\nProcess better ho sakti thi.`,
-        `Experience low satisfaction wala tha.\nCommunication ${keywordHint} ke baare mein clearer hona chahiye tha.\nMain bas honest feedback de raha hoon.`,
-        `Visit during ${keywordHint} treatment smooth nahi laga.\nCoordination aur explanation improve ho sakte the.`,
-        `Service ke dauran issues feel hue.\nFollow-up better ho sakta tha.`,
+        `Visit se expectations meet nahi hui.\n${kw1} mein kuch issues the.\n${kw2} ke quality mein improvement needed.\nProcess better ho sakti thi.`,
+        `Experience low satisfaction wala tha.\nCommunication ${kw1} ke baare mein clearer hona chahiye tha.\n${kw2} procedure clear nahi tha.\nMain bas honest feedback de raha hoon.`,
+        `Visit during ${kw1} treatment smooth nahi laga.\n${kw2} ke dauran coordination kharab tha.\nExplanation improve ho sakta tha.`,
+        `${allKw} ke baare mein concerns the.\nFollow-up better ho sakta tha.\nStaff response improve ho sakte the.`,
       ]
       : [
-        `The visit did not meet my expectations.\nThe ${keywordHint} process could be clearer.\nThis needs improvement.`,
-        `My ${keywordHint} experience felt low-satisfaction.\nCommunication could have been better.\nI am leaving this as honest feedback.`,
-        `The visit for ${keywordHint} did not feel smooth.\nCoordination could be handled better.`,
-        `There were concerns about ${keywordHint}.\nThe follow-up could have been clearer.`,
+        `The visit did not meet my expectations.\nThe ${kw1} process could be clearer.\n${kw2} quality needs improvement.\nThis needs better handling.`,
+        `My ${kw1} experience felt unsatisfactory.\nCommunication about ${kw2} could have been better.\nI am leaving this as honest feedback.`,
+        `The visit for ${kw1} did not feel smooth.\n${kw2} coordination could be improved.\nExplanation was not clear enough.`,
+        `There were concerns about ${allKw}.\nThe follow-up could have been clearer.\nStaff response could improve.`,
       ];
     return seeds.map(seed=>shapeLines(seed,rating,language)).slice(0,TARGET_COUNT);
   }
   const seeds=language==='hinglish'
     ? [
-      `Clinic visit ka experience theek raha.\n${keywordHint} treatment helpful tha aur doctor ne clearly samjhai.\nOverall mujhe comfortable feel hua.`,
-      `Mera ${keywordHint} visit simple aur smooth raha.\nDoctor ne calmly guide kiya.\nClinic ka environment bhi neat tha.`,
-      `Aaj ka visit manageable laga.\n${keywordHint} process clear tha aur staff ka response polite tha.`,
-      `Clinic mein experience comfortable tha.\nDoctor ne ${keywordHint} ke concerns dhyan se sune.\nFollow-up clear mili.`,
+      `Clinic visit ka experience theek raha.\n${kw1} treatment helpful tha aur doctor ne clearly samjhai.\n${kw2} ke baare mein mujhe confident feel hua.\nOverall mujhe comfortable feel hua.`,
+      `Mera ${kw1} visit simple aur smooth raha.\nDoctor ne ${kw2} ke baare mein calmly guide kiya.\nClinic ka environment bhi neat tha.`,
+      `Aaj ka visit manageable laga.\n${kw1} process clear tha aur ${kw2} ke baare mein samjh bhi mili.\nStaff ka response polite tha.`,
+      `Clinic mein experience comfortable tha.\nDoctor ne ${allKw} ke concerns dhyan se sune.\nFollow-up clear aur helpful mili.`,
     ]
     : [
-      `My clinic visit went well overall.\nThe ${keywordHint} treatment was explained clearly.\nI felt comfortable and satisfied.`,
-      `The appointment was comfortable and well managed.\nThe ${keywordHint} experience was handled smoothly.\nOverall it felt reassuring.`,
-      `I visited for ${keywordHint} with some doubts.\nThe doctor listened and explained clearly.\nThe clinic experience felt professional.`,
-      `The clinic felt clean and organised.\nThe ${keywordHint} service was handled well.\nOverall, it was a positive visit.`,
+      `My clinic visit went well overall.\nThe ${kw1} treatment was explained clearly.\nI felt confident about ${kw2}.\nI felt comfortable and satisfied.`,
+      `The appointment was comfortable and well managed.\nThe ${kw1} experience was handled smoothly.\nDoctor explained ${kw2} well.\nOverall it felt reassuring.`,
+      `I visited for ${kw1} with some doubts.\nThe doctor explained ${kw2} carefully.\nThe clinic experience felt professional.`,
+      `The clinic felt clean and organised.\nThe staff addressed ${allKw} comprehensively.\nOverall, it was a positive visit.`,
     ];
   return seeds.map(seed=>shapeLines(seed,rating,language)).slice(0,TARGET_COUNT);
 }
