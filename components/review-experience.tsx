@@ -196,8 +196,8 @@ export function ReviewExperience({
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (position) => setPatientLocation({ latitude: position.coords.latitude, longitude: position.coords.longitude }),
-        () => undefined,
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 60_000 },
+        (error) => console.debug('Geolocation unavailable (non-blocking):', error.code),
+        { enableHighAccuracy: false, timeout: 5000, maximumAge: 300_000 }, // Non-blocking, reduced timeout
       );
     }
   }, []);
@@ -289,7 +289,7 @@ export function ReviewExperience({
       const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
       if (!supabaseUrl || !anonKey) throw new Error("Review generation is not configured.");
       const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 10000);
+      const timeout = window.setTimeout(() => controller.abort(), 20000); // 20 seconds (allows for DB queries + Gemini + potential retry)
       const response = await fetch(`${supabaseUrl.replace(/\/$/, "")}/functions/v1/generate-review`, {
         method: "POST",
         headers: { "Content-Type": "application/json", apikey: anonKey, Authorization: `Bearer ${anonKey}` },

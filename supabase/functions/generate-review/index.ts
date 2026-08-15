@@ -8,7 +8,7 @@ const headers={
 };
 const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers});
 const GEMINI_MODEL='gemini-2.5-flash';
-const GEMINI_TIMEOUT_MS=6_000;
+const GEMINI_TIMEOUT_MS=9_000; // Increased from 6s to allow for retries
 const TARGET_COUNT=3;
 
 type KB={area_name?:unknown;city_name?:unknown;top_services?:unknown};
@@ -395,6 +395,7 @@ Deno.serve(async(req)=>{
   if(req.method!=='POST')return reply({reviews:emergencyDrafts(fallbackLanguage),target_count:TARGET_COUNT,quality:{fallback:true}});
 
   try{
+    const requestStartMs=Date.now();
     // Parse request
     let body:Record<string,unknown>;
     try{body=await req.json()}
@@ -433,12 +434,15 @@ Deno.serve(async(req)=>{
       });
     }
 
+    const dbStartMs=Date.now();
     const [doctorResult,aiSettingsResult,keywordsResult,recentReviewsResult]=await Promise.allSettled([
       db.from('doctors').select('id,doctor_name,clinic_name,city,specialization,knowledge_base').eq('id',doctorId).eq('is_active',true).maybeSingle(),
       db.from('doctor_ai_settings').select('*').eq('doctor_id',doctorId).maybeSingle(),
       db.from('doctor_keywords').select('keyword').eq('doctor_id',doctorId),
       db.from('generated_reviews').select('content').eq('doctor_id',doctorId).order('created_at',{ascending:false}).limit(15),
     ]);
+    const dbMs=Date.now()-dbStartMs;
+    console.log(`⏱️  DB queries: ${dbMs}ms`);
 
     const doctor=(doctorResult.status==='fulfilled'?doctorResult.value.data:null);
     if(!doctor){
@@ -569,7 +573,10 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
     console.log('📤 Sending to Gemini prompt with keywords:',digest.high_priority_keywords);
     console.log('Prompt length:',prompt.length,'chars');
 
+    const geminiStartMs=Date.now();
     const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},GEMINI_TIMEOUT_MS);
+    const geminiMs=Date.now()-geminiStartMs;
+    console.log(`⏱️  Gemini API call: ${geminiMs}ms`);
 
     if(!response.ok){
       const errText=await response.text();
@@ -603,32 +610,18 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
         return firstLine.split(/\s+/).slice(0,6).join(' ');
       });
 
+      // NOTE: Duplicate retry disabled to prevent timeout (was making second API call)
+      // Duplicates will be handled by fallback if needed
+      let duplicateCount=0;
       for(let i=0;i<reviews.length;i++){
         const newFirstLine=reviews[i].split(/\n/)[0]?.toLowerCase().split(/\s+/).slice(0,6).join(' ')||'';
-        let isDuplicate=false;
         for(const recentLine of recentFirstLines){
           const common=newFirstLine.split(/\s+/).filter(w=>recentLine.includes(w)).length;
           const similarity=common/Math.max(newFirstLine.split(/\s+/).length,1);
-          if(similarity>0.65){isDuplicate=true;break}
-        }
-        if(isDuplicate){
-          console.log('⚠️  Review',i,'flagged as duplicate, retrying with different opening');
-          const retryPayload={...geminiPayload};
-          retryPayload.contents[0].parts.push({text:`This review was too similar to recent ones. Generate a DIFFERENT opening line while keeping keywords "${digest.high_priority_keywords.join(', ')}" (2+ times each).`});
-          try{
-            const retryResponse=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(retryPayload)},GEMINI_TIMEOUT_MS);
-            if(retryResponse.ok){
-              const retryEnvelope=await retryResponse.json() as any;
-              const retryParts=retryEnvelope?.candidates?.[0]?.content?.parts;
-              if(Array.isArray(retryParts)){
-                const retryText=retryParts.map((p:any)=>typeof p.text==='string'?p.text:'').filter(Boolean).join('\n');
-                const retryReviews=parseReviews(retryText,1);
-                if(retryReviews.length===1){reviews[i]=retryReviews[0];console.log('✅ Retry successful for review',i)}
-              }
-            }
-          }catch(error){console.log('❌ Retry failed, using original')}
+          if(similarity>0.65){duplicateCount++;break}
         }
       }
+      if(duplicateCount>0)console.log('ℹ️  Detected',duplicateCount,'potential duplicates (retry disabled for performance)');
     }
 
     // Fallback if not enough reviews
@@ -705,11 +698,15 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
       if(error)console.error('Meta persist failed',error);
     }catch(error){console.error('Meta persist threw',error)}
 
-    return reply({reviews,target_count:TARGET_COUNT,quality:{...metadata}});
+    const totalMs=Date.now()-requestStartMs;
+    console.log(`⏱️  TOTAL REQUEST TIME: ${totalMs}ms (DB: ${dbMs}ms + Gemini: ${geminiMs}ms + overhead)`);
+
+    return reply({reviews,target_count:TARGET_COUNT,quality:{...metadata,timing_ms:totalMs}});
 
   }catch(error){
-    console.error('Unhandled error',error);
+    const totalMs=Date.now()-requestStartMs;
+    console.error('❌ Unhandled error after',totalMs,'ms:',error);
     void logSystemError(db,doctorIdForAudit,error instanceof Error?error.message:String(error));
-    return reply({reviews:emergencyDrafts('english'),target_count:TARGET_COUNT,quality:{fallback:true}});
+    return reply({reviews:emergencyDrafts('english'),target_count:TARGET_COUNT,quality:{fallback:true,error_after_ms:totalMs}});
   }
 });
