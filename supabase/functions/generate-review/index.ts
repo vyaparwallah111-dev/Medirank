@@ -10,10 +10,9 @@ const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status
 const GEMINI_MODEL='gemini-2.5-flash';
 const HELPER_MODEL='gemini-3.1-flash-lite';
 const GEMINI_TIMEOUT_MS=7_000;
-const TARGET_COUNT=2;
-const DOCTOR_NAME_INJECTION_PROBABILITY=0.50;
-const DAILY_KEYWORD_SEQUENCE_CAP=500;
-const PERSONALIZED_FLOW_PROBABILITY=0.25;
+const TARGET_COUNT=3;
+const DOCTOR_NAME_INJECTION_PROBABILITY=0.45;
+const DOCTOR_KEYWORD_COMBO_PROBABILITY=0.45;
 
 type KB={area_name?:unknown;city_name?:unknown;top_services?:unknown};
 type Language='english'|'hinglish';
@@ -133,7 +132,7 @@ const selectPatientConcern=(aiSettings:any,rating:number)=>{
   if(!aiSettings)return null;
   const concerns=jsonList(aiSettings.patient_concerns||[]);
   if(concerns.length===0)return null;
-  if(rating<=2)return null;
+  if(rating<4)return null;
   return randomItem(concerns);
 };
 const selectUSPPoint=(aiSettings:any)=>{
@@ -307,10 +306,42 @@ function injectPatientContext(content:string,patientName:string,patientLocality:
     : safeName
       ? safeName
       : (language==='hinglish'?`${safeLocality} se`:`from ${safeLocality}`);
-  lines[0]=language==='hinglish'
-    ? `Main ${identity}, ${first.replace(/^main\s+/i,'')}`
-    : `I am ${identity}, and ${first.replace(/^I\s+/i,'')}`;
-  return shapeLines(lines.join('\n'),rating,language,lengthBracket);
+  const patternChoice=Math.floor(Math.random()*4);
+  if(patternChoice===0){
+    lines[0]=language==='hinglish'
+      ? `Main ${identity}, ${first.replace(/^main\s+/i,'')}`
+      : `I am ${identity}, and ${first.replace(/^I\s+/i,'')}`;
+  }else if(patternChoice===1&&lines.length>0){
+    const restOfContent=lines.slice(1).join('\n');
+    lines[0]=first;
+    lines.push(language==='hinglish'?`Main ${identity} hoon.`:`I'm ${identity}.`);
+    if(restOfContent)lines.push(restOfContent);
+  }else if(patternChoice===2&&safeName&&safeLocality){
+    lines[0]=language==='hinglish'
+      ? `${safeName} ko visit ke dauran ${first.replace(/^main\s+/i,'')}`
+      : `During my visit, ${first.replace(/^I\s+/i,'').replace(/^my\s+/i,'')}. I'm from ${safeLocality}.`;
+  }else{
+    lines[0]=first;
+    lines.splice(1,0,language==='hinglish'?`(Main ${identity} se hoon)`:`(I'm ${identity}.)`);
+  }
+  return shapeLines(lines.filter(Boolean).join('\n'),rating,language,lengthBracket);
+}
+
+async function checkDuplicateRisk(db:ReturnType<typeof createClient>,doctorId:string,newReviewOpeningLine:string){
+  const recentResult=await db.from('generated_reviews').select('content').eq('doctor_id',doctorId).order('created_at',{ascending:false}).limit(20);
+  if(recentResult.error||!recentResult.data)return false;
+  const newNorm=normalize(newReviewOpeningLine.split(/\n/)[0]||'');
+  if(!newNorm||newNorm.length<5)return false;
+  for(const row of recentResult.data){
+    const content=typeof row.content==='string'?row.content:'';
+    const recentNorm=normalize(content.split(/\n/)[0]||'');
+    if(!recentNorm)continue;
+    const commonWords=newNorm.split(/\s+/).filter(w=>recentNorm.includes(w)).length;
+    const newWords=newNorm.split(/\s+/).length;
+    const similarity=newWords>0?commonWords/newWords:0;
+    if(similarity>=0.65)return true;
+  }
+  return false;
 }
 
 function emergencyDrafts(language:Language,rating=5,keywords:string[]=[]){
@@ -393,7 +424,7 @@ Deno.serve(async(req)=>{
     const suppliedPatientLocality=normalizeHumanInput(body.patient_locality,60,'locality');
     const operationalScanSequence=0;
     const allowLanguageStep=true;
-    const allowDetailForm=true;
+    const allowDetailForm=Math.random()<0.55;
     if(body.precheck_only===true)return reply({allowed:true,location_verified:locationVerified,distance_meters:distanceMeters,routing:{operational_scan_sequence:operationalScanSequence,operational_window_active:opWindow.isActive,operational_window_start:opWindow.startIso,operational_window_end:opWindow.endIso,allow_language_step:allowLanguageStep,allow_detail_form:allowDetailForm}});
 
     const effectiveLanguage:Language=body.language==='hinglish'?'hinglish':'english';
@@ -419,21 +450,19 @@ Deno.serve(async(req)=>{
     const doctorName=sanitizeText(doctor.doctor_name,100);
     const clinicName=sanitizeText(doctor.clinic_name,120);
     const includeDoctorName=Math.random()<DOCTOR_NAME_INJECTION_PROBABILITY;
+    const includeDocKeywordCombo=Math.random()<DOCTOR_KEYWORD_COMBO_PROBABILITY;
     const isNameAreaPrompted=allowDetailForm;
     const isLanguagePrompted=allowLanguageStep;
     const allowEmoji=rating>=4&&Math.random()<.45;
     const lengthBracket=selectLengthBracket(rating);
 
-    const dailyCountResult=await db.from('review_generation_events').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).gte('created_at',opWindow.startIso).lt('created_at',opWindow.endIso);
-    if(dailyCountResult.error)console.error('Daily generation sequence lookup failed; defaulting to first generation',dailyCountResult.error);
+    const dailyCountResult=await db.from('review_generation_events').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).order('created_at',{ascending:false}).limit(50);
+    if(dailyCountResult.error)console.error('Recent generation lookup failed',dailyCountResult.error);
     const dailySequence=(dailyCountResult.count??0)+1;
-    const keywordUseResult=await db.from('review_generation_meta').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id).eq('keyword_injection_active',true).gte('created_at',opWindow.startIso).lt('created_at',opWindow.endIso);
-    if(keywordUseResult.error)console.error('Keyword usage lookup failed; continuing anyway',keywordUseResult.error);
-    const keywordInjectionsToday=keywordUseResult.error?0:(keywordUseResult.count??0);
-    let keywordInjectionActive=selectedChips.length>=2&&keywordInjectionsToday<DAILY_KEYWORD_SEQUENCE_CAP;
-    const strategy:Strategy=keywordInjectionActive?'keyword_optimized':'clean_human';
+    const keywordInjectionActive=selectedChips.length>=2;
+    const strategy:Strategy='keyword_optimized';
     const treatmentChips=selectedChips.filter(chip=>allAvailableKeywords.some(ak=>normalize(ak)===normalize(chip)));
-    const doctorCombos=includeDoctorName&&doctorName?treatmentChips.slice(0,2).map(chip=>doctorKeywordCombo(doctorName,chip,effectiveLanguage)):[];
+    const doctorCombos=includeDocKeywordCombo&&doctorName?treatmentChips.slice(0,2).map(chip=>doctorKeywordCombo(doctorName,chip,effectiveLanguage)):[];
     const selectedConcern=selectPatientConcern(aiSettings,rating);
     const selectedUSP=selectUSPPoint(aiSettings);
     const secondaryArea=(Math.random()<0.25&&aiSettings?.target_areas?.secondary?.length>0)?jsonList(aiSettings.target_areas.secondary)[0]:null;
@@ -449,7 +478,7 @@ Deno.serve(async(req)=>{
     const casingProfile=randomItem(casingProfiles);
     const ownerResponseHookState={enabled:false,status:'reserved'};
 
-    const structuralPrefix=`JSON: exactly ${TARGET_COUNT} [{"review":"..."}], no markdown. BLOCKED_PHRASES: "sharing genuine","overall good","highly satisfied","recently visited","my experience was","I would definitely recommend","five-star","would rate","everything was perfect","best clinic","without a doubt". No fake outcomes/diagnosis/claims. If name/locality: MUST include naturally. Each keyword: 2x+ per review, varied contexts. Allow: small typos, casual tone, minor imperfections (makes it human).`;
+    const structuralPrefix=`JSON: exactly ${TARGET_COUNT} [{"review":"..."}], no markdown. BLOCKED_PHRASES: "sharing genuine","overall good","highly satisfied","recently visited","my experience was","I would definitely recommend","five-star","would rate","everything was perfect","best clinic","without a doubt","The appointment felt organised from the start","The reception process was simple","The doctor listened to my concerns carefully","The explanation was calm and clear","The clinic environment felt clean","The staff response was polite","The visit did not feel rushed","I understood the next steps properly","Overall the experience felt comfortable","I felt satisfied with my visit". No fake outcomes/diagnosis/claims. If name/locality: MUST include naturally. Each keyword: 2x+ per review, varied contexts. Allow: small typos, casual tone, minor imperfections (makes it human).`;
     const strategyBlock=keywordInjectionActive
       ? `keywords=${JSON.stringify(injectionKeywords)}; MANDATORY: use each selected chip at least 2x per review, distribute naturally across different contexts, no keyword-stuffing or repetition in same sentence.`
       : `keywords=none; ambient only. Avoid exact assets ${JSON.stringify(blockedKeywords)}.`;
@@ -469,8 +498,8 @@ tone_adjustment=${rating<=2?'honest about friction, never soften complaints':'au
     try{
       generationAttempts=1;
       const maxTokensPerLine=20;
-      const jsonOverhead=80;
-      const maxOutputTokens=Math.min(lengthBracket.max*maxTokensPerLine*TARGET_COUNT+jsonOverhead,800);
+      const jsonOverhead=100;
+      const maxOutputTokens=Math.min(lengthBracket.max*maxTokensPerLine*TARGET_COUNT+jsonOverhead,1200);
       const isConversational=selectedArchetypeKey==='A'||selectedArchetypeKey==='E'||selectedArchetypeKey==='F';
       const temperature=isConversational?0.88:0.75;
       const topP=isConversational?0.98:0.92;
@@ -478,7 +507,7 @@ tone_adjustment=${rating<=2?'honest about friction, never soften complaints':'au
         contents:[{parts:[{text:structuralPrefix},{text:executionLayout}]}],
         generationConfig:{temperature,topP,topK:40,maxOutputTokens,responseMimeType:'application/json'},
       };
-      console.log('Gemini request',{model:GEMINI_MODEL,doctor_id:doctor.id,dailySequence,strategy,keywordInjectionsToday,selectedArchetypeKey,personalityVariant,rating,effectiveLanguage,temperature,topP,maxOutputTokens});
+      console.log('Gemini request',{model:GEMINI_MODEL,doctor_id:doctor.id,dailySequence,strategy,keywordInjectionActive,selectedChipsCount:selectedChips.length,selectedArchetypeKey,personalityVariant,rating,effectiveLanguage,temperature,topP,maxOutputTokens});
       const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},GEMINI_TIMEOUT_MS);
       const responseText=await response.text();
       if(!response.ok){
@@ -493,10 +522,20 @@ tone_adjustment=${rating<=2?'honest about friction, never soften complaints':'au
         const modelText=parts.map(part=>typeof part.text==='string'?part.text:'').filter(Boolean).join('\n\n');
         const strictDrafts=parseReviews(modelText,TARGET_COUNT);
         if(strictDrafts.length!==TARGET_COUNT)throw new Error('Gemini response violated strict JSON object-map contract');
-        reviews=strictDrafts.map(review=>{
-          const withDoctor=includeDoctorName?injectDoctorName(review,doctorName,rating,effectiveLanguage,lengthBracket):shapeLines(review,rating,effectiveLanguage,lengthBracket);
-          return injectPatientContext(withDoctor,patientName,patientLocality,rating,effectiveLanguage,lengthBracket);
-        });
+        for(const review of strictDrafts){
+          const isDuplicate=await checkDuplicateRisk(db,doctorId,review);
+          if(isDuplicate){
+            console.warn('Generated review opening line similar to recent reviews; will use fallback');
+            reviews=emergencyDrafts(effectiveLanguage,rating,selectedChips);
+            break;
+          }
+        }
+        if(reviews.length===0){
+          reviews=strictDrafts.map(review=>{
+            const withDoctor=includeDoctorName?injectDoctorName(review,doctorName,rating,effectiveLanguage,lengthBracket):shapeLines(review,rating,effectiveLanguage,lengthBracket);
+            return injectPatientContext(withDoctor,patientName,patientLocality,rating,effectiveLanguage,lengthBracket);
+          });
+        }
       }
     }catch(error){
       const message=error instanceof Error?error.message:String(error);
@@ -505,20 +544,13 @@ tone_adjustment=${rating<=2?'honest about friction, never soften complaints':'au
     }
 
     if(reviews.length<TARGET_COUNT){
-      reviews=unique([...reviews,...emergencyDrafts(effectiveLanguage,rating,activeKeywords)],TARGET_COUNT).map(review=>{
+      reviews=unique([...reviews,...emergencyDrafts(effectiveLanguage,rating,selectedChips)],TARGET_COUNT).map(review=>{
         const withDoctor=includeDoctorName?injectDoctorName(review,doctorName,rating,effectiveLanguage,lengthBracket):shapeLines(review,rating,effectiveLanguage,lengthBracket);
         return injectPatientContext(withDoctor,patientName,patientLocality,rating,effectiveLanguage,lengthBracket);
       });
     }
     reviews=reviews.slice(0,TARGET_COUNT);
 
-    if(rating>2&&strategy==='clean_human'&&blockedKeywords.length){
-      const leaked=reviews.some(review=>blockedKeywords.some(keyword=>keyword&&normalize(review).includes(normalize(keyword))));
-      if(leaked){
-        console.error('Clean human output leaked structural keyword; using emergency drafts',{doctor_id:doctor.id,dailySequence});
-        reviews=emergencyDrafts(effectiveLanguage,rating,activeKeywords).map(review=>injectPatientContext(review,patientName,patientLocality,rating,effectiveLanguage,lengthBracket));
-      }
-    }
     reviews=reviews.map(review=>{
       const withDoctor=includeDoctorName?injectDoctorName(review,doctorName,rating,effectiveLanguage,lengthBracket):shapeLines(review,rating,effectiveLanguage,lengthBracket);
       return injectPatientContext(withDoctor,patientName,patientLocality,rating,effectiveLanguage,lengthBracket);
@@ -539,9 +571,9 @@ tone_adjustment=${rating<=2?'honest about friction, never soften complaints':'au
       daily_generation_sequence:dailySequence,
       strategy,
       keyword_injection_active:keywordInjectionActive,
-      keyword_probability:keywordProbability,
-      keyword_injections_today_before:keywordInjectionsToday,
       keyword_injection_assets:injectionKeywords,
+      selected_chips:selectedChips,
+      doctor_combos_included:includeDocKeywordCombo,
       length_bracket:lengthBracket.key,
       length_min:lengthBracket.min,
       length_max:lengthBracket.max,
@@ -581,7 +613,6 @@ tone_adjustment=${rating<=2?'honest about friction, never soften complaints':'au
         language:effectiveLanguage,
         strategy,
         keyword_injection_active:keywordInjectionActive,
-        keyword_probability:keywordProbability,
         length_bracket:lengthBracket.key,
         structure_archetype_key:selectedArchetypeKey,
         structure_archetype:selectedArchetype,
