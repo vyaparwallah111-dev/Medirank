@@ -549,7 +549,12 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
 `;
 
     // Call Gemini
-    console.log('Generating reviews for',{doctor_id:doctorId,rating,language,keywords:digest.high_priority_keywords});
+    console.log('🔍 DIAGNOSIS START');
+    console.log('Doctor ID:',doctorId);
+    console.log('Selected Chips:',digest.selected_chips);
+    console.log('High Priority Keywords:',digest.high_priority_keywords);
+    console.log('Rating:',rating,'Language:',language);
+
     const geminiPayload={
       contents:[{parts:[{text:prompt}]}],
       generationConfig:{
@@ -561,29 +566,38 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
       },
     };
 
+    console.log('📤 Sending to Gemini prompt with keywords:',digest.high_priority_keywords);
+    console.log('Prompt length:',prompt.length,'chars');
+
     const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},GEMINI_TIMEOUT_MS);
 
     if(!response.ok){
       const errText=await response.text();
-      console.error('Gemini error',{status:response.status,text:errText.slice(0,500)});
+      console.error('❌ GEMINI API ERROR',{status:response.status,error:errText.slice(0,500)});
       void logSystemError(db,doctorId,`Gemini ${response.status}: ${errText.slice(0,300)}`);
       const fallback=emergencyDrafts(language,rating,digest.selected_chips);
-      return reply({reviews:fallback,target_count:TARGET_COUNT,quality:{fallback:true}});
+      console.log('⚠️  USING FALLBACK (API ERROR) - emergencyDrafts called with keywords:',digest.selected_chips);
+      return reply({reviews:fallback,target_count:TARGET_COUNT,quality:{fallback:true,api_error:true}});
     }
 
     const envelope=await response.json() as any;
     const parts=envelope?.candidates?.[0]?.content?.parts;
     if(!Array.isArray(parts)){
-      console.error('Invalid Gemini response structure');
+      console.error('❌ INVALID RESPONSE STRUCTURE - parts is not array',{parts});
       const fallback=emergencyDrafts(language,rating,digest.selected_chips);
-      return reply({reviews:fallback,target_count:TARGET_COUNT,quality:{fallback:true}});
+      console.log('⚠️  USING FALLBACK (PARSE ERROR) - emergencyDrafts called with keywords:',digest.selected_chips);
+      return reply({reviews:fallback,target_count:TARGET_COUNT,quality:{fallback:true,parse_error:true}});
     }
 
     const modelText=parts.map((p:any)=>typeof p.text==='string'?p.text:'').filter(Boolean).join('\n');
+    console.log('📥 RAW GEMINI RESPONSE (first 500 chars):\n',modelText.slice(0,500));
+
     let reviews=parseReviews(modelText,TARGET_COUNT);
+    console.log('✅ PARSED',reviews.length,'reviews from Gemini');
 
     // Lightweight duplicate check - only check first line
     if(reviews.length===TARGET_COUNT){
+      console.log('🔍 Checking duplicates against',recentReviews.length,'recent reviews');
       const recentFirstLines=recentReviews.map(r=>{
         const firstLine=(typeof r.content==='string'?r.content:'').split(/\n/)[0]?.toLowerCase()||'';
         return firstLine.split(/\s+/).slice(0,6).join(' ');
@@ -598,7 +612,7 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
           if(similarity>0.65){isDuplicate=true;break}
         }
         if(isDuplicate){
-          console.log('Review',i,'flagged as duplicate, retrying');
+          console.log('⚠️  Review',i,'flagged as duplicate, retrying with different opening');
           const retryPayload={...geminiPayload};
           retryPayload.contents[0].parts.push({text:`This review was too similar to recent ones. Generate a DIFFERENT opening line while keeping keywords "${digest.high_priority_keywords.join(', ')}" (2+ times each).`});
           try{
@@ -609,20 +623,27 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
               if(Array.isArray(retryParts)){
                 const retryText=retryParts.map((p:any)=>typeof p.text==='string'?p.text:'').filter(Boolean).join('\n');
                 const retryReviews=parseReviews(retryText,1);
-                if(retryReviews.length===1){reviews[i]=retryReviews[0]}
+                if(retryReviews.length===1){reviews[i]=retryReviews[0];console.log('✅ Retry successful for review',i)}
               }
             }
-          }catch(error){console.log('Retry failed, using original')}
+          }catch(error){console.log('❌ Retry failed, using original')}
         }
       }
     }
 
     // Fallback if not enough reviews
     if(reviews.length<TARGET_COUNT){
+      console.log('⚠️  Only',reviews.length,'reviews from Gemini, using emergencyDrafts with keywords:',digest.selected_chips);
       reviews=[...reviews,...emergencyDrafts(language,rating,digest.selected_chips)].slice(0,TARGET_COUNT);
+      console.log('ℹ️  Total after fallback:',reviews.length);
+    }else{
+      console.log('✅ All',reviews.length,'reviews from Gemini (no fallback needed)');
     }
 
     // Post-processing (name/area injection, doctor name injection)
+    console.log('📝 Before post-processing:');
+    reviews.forEach((r,i)=>console.log(`Review ${i}: ${r.slice(0,100)}...`));
+
     reviews=reviews.map(review=>{
       let processed=review;
       if(includeDoctorName&&!normalize(processed).includes(normalize(digest.doctor_name))){
@@ -632,6 +653,18 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
         processed=injectPatientContext(processed,digest.patient_name,digest.patient_locality,rating,language,lengthBracket);
       }
       return processed;
+    });
+
+    console.log('📋 FINAL OUTPUT - 3 reviews being returned:');
+    reviews.forEach((r,i)=>{
+      console.log(`\n=== REVIEW ${i+1} ===`);
+      console.log(r);
+      console.log('---');
+      console.log('Contains high-priority keywords:');
+      digest.high_priority_keywords.forEach(kw=>{
+        const count=(r.match(new RegExp(kw,'gi'))||[]).length;
+        console.log(`  "${kw}": ${count} times`);
+      });
     });
 
     // Save metadata
