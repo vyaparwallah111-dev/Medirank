@@ -258,8 +258,8 @@ function shapeLines(content:string,rating:number,language:Language,lengthBracket
     : rating===3
       ? (language==='hinglish'?['Kuch parts theek the.','Kuch areas better ho sakte hain.','Overall experience neutral raha.']:['Some parts were fine.','A few areas could be better.','Overall, it felt neutral.'])
       : (language==='hinglish'
-        ? ['Appointment start se kaafi organised feel hua.','Reception par basic process simple tha.','Doctor ne concerns dhyan se sune.','Explanation calm aur clear thi.','Clinic ka environment clean laga.','Staff ka response polite tha.','Visit ke dauran rush jaisa feel nahi hua.','Mujhe next steps samajh aa gaye.','Overall experience comfortable raha.','Main apne visit se satisfied hoon.']
-        : ['The appointment felt organised from the start.','The reception process was simple.','The doctor listened to my concerns carefully.','The explanation was calm and clear.','The clinic environment felt clean.','The staff response was polite.','The visit did not feel rushed.','I understood the next steps properly.','Overall, the experience felt comfortable.','I felt satisfied with my visit.']);
+        ? ['Clinic visit ka experience achcha raha.','Mujhe positive vibes mila.','Doctor ke paas time tha mere liye.','Treatment process smooth tha.','Consultation meaningful thi.','Team cooperative tha.','Clinic atmosphere welcoming tha.','Pata chal gaya ki treatment kaise hoga.','Mera confidence badhta gaya.','Experience memorable raha.']
+        : ['The clinic visit was worthwhile.','I had a positive experience.','The doctor was attentive to my needs.','The treatment process ran smoothly.','The consultation was meaningful.','The team was cooperative.','The atmosphere was welcoming.','I learned about the treatment plan.','My confidence grew during the visit.','The experience was memorable.']);
   const next=[...lines];
   for(const filler of fillers){if(next.length>=shape.target)break;if(!next.some(line=>normalize(line)===normalize(filler)))next.push(filler)}
   return next.slice(0,shape.max).join('\n');
@@ -478,9 +478,9 @@ Deno.serve(async(req)=>{
     const casingProfile=randomItem(casingProfiles);
     const ownerResponseHookState={enabled:false,status:'reserved'};
 
-    const structuralPrefix=`JSON: exactly ${TARGET_COUNT} [{"review":"..."}], no markdown. BLOCKED_PHRASES: "sharing genuine","overall good","highly satisfied","recently visited","my experience was","I would definitely recommend","five-star","would rate","everything was perfect","best clinic","without a doubt","The appointment felt organised from the start","The reception process was simple","The doctor listened to my concerns carefully","The explanation was calm and clear","The clinic environment felt clean","The staff response was polite","The visit did not feel rushed","I understood the next steps properly","Overall the experience felt comfortable","I felt satisfied with my visit". No fake outcomes/diagnosis/claims. If name/locality: MUST include naturally. Each keyword: 2x+ per review, varied contexts. Allow: small typos, casual tone, minor imperfections (makes it human).`;
+    const structuralPrefix=`JSON: exactly ${TARGET_COUNT} [{"review":"..."}], no markdown. CRITICAL: NEVER use these phrases: "sharing genuine","overall good","highly satisfied","recently visited","my experience was","I would definitely recommend","five-star","would rate","everything was perfect","best clinic","without a doubt","The appointment felt organised from the start","The reception process was simple","The doctor listened to my concerns carefully","The explanation was calm and clear","The clinic environment felt clean","The staff response was polite","The visit did not feel rushed","I understood the next steps properly","Overall the experience felt comfortable","I felt satisfied with my visit". No fake outcomes/diagnosis/claims. Allow: small typos, casual tone, minor imperfections.`;
     const strategyBlock=keywordInjectionActive
-      ? `keywords=${JSON.stringify(injectionKeywords)}; MANDATORY: use each selected chip at least 2x per review, distribute naturally across different contexts, no keyword-stuffing or repetition in same sentence.`
+      ? `KEYWORDS_CRITICAL=${JSON.stringify(selectedChips)}; EACH KEYWORD MUST appear 2-3 times per review in DIFFERENT sentences. Example: "root canal explained clearly" (sentence 1), "root canal procedure smooth" (sentence 2). Vary sentence structure, don't repeat word-for-word. THIS IS MANDATORY FOR SEO.`
       : `keywords=none; ambient only. Avoid exact assets ${JSON.stringify(blockedKeywords)}.`;
     const highPriorityKeywords=mergedKeywords.high.slice(0,2).join(', ');
     const executionLayout=`ARCH=${selectedArchetypeKey}: ${selectedArchetype}
@@ -489,7 +489,12 @@ VARIATION: Use mixed sentence lengths (short + long). Start differently each tim
 ${strategyBlock}
 clinic=${keywordInjectionActive?JSON.stringify(clinicName):'null'}; area=${keywordInjectionActive?JSON.stringify(primaryArea):'null'}; chips=${keywordInjectionActive?JSON.stringify(selectedChips):'[]'}
 patient=${JSON.stringify({name:patientName||'',locality:patientLocality||'',note:customNotes||''})}
-MANDATORY_ELEMENTS: guaranteed_keywords=[${highPriorityKeywords}] (must include these naturally); concern=${selectedConcern?`"${selectedConcern}" (subtly address this if review mentions comfort/experience)`:'none'}; usp=${selectedUSP?`"${selectedUSP}" (naturally weave once if relevant)`:'none'}; secondary_area=${secondaryArea?`"${secondaryArea}" (mention in ~20% of reviews, e.g., location reference)`:'none'}.
+MANDATORY_ELEMENTS:
+*** KEYWORDS ABOVE ALL *** ${selectedChips.length>0?`Selected keywords: ${selectedChips.join(', ')}. MUST appear 2+ times EACH in different sentences.`:''}
+high_priority=[${highPriorityKeywords}] (GUARANTEED inclusion, mention at least 2x per review in different contexts);
+concern=${selectedConcern?`"${selectedConcern}" (subtly address if 4-5 star)`:'none'};
+usp=${selectedUSP?`"${selectedUSP}" (mention 1x naturally if relevant)`:'none'};
+secondary_area=${secondaryArea?`"${secondaryArea}" (20% mention rate)`:'none'}.
 ${ratingLayout(rating,effectiveLanguage,keywordInjectionActive?serviceKeyword:'service',doctorName,includeDoctorName,allowEmoji,lengthBracket,keywordInjectionActive,patientName,patientLocality)}
 tone_adjustment=${rating<=2?'honest about friction, never soften complaints':'authentic satisfaction, not over-the-top praise'}.`;
 
