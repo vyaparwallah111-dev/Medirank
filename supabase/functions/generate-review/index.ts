@@ -599,11 +599,15 @@ Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "
       doctor_name_included:includeDoctorName,
     };
 
-    // Persist reviews
+    // Persist reviews - capture the inserted row ids (draft_index preserves batch order) so the
+    // frontend can later tell us exactly which draft the patient copied (see selected_at/selected
+    // columns, set by app/api/analytics/select-review when the patient clicks "Copy Review").
+    let reviewIds:(string|null)[]=reviews.map(()=>null);
     try{
-      const rows=reviews.map(content=>({doctor_id:doctorId,content,embedding:null,generation_metadata:metadata}));
-      const {error}=await db.from('generated_reviews').insert(rows);
+      const rows=reviews.map((content,i)=>({doctor_id:doctorId,content,embedding:null,generation_metadata:metadata,draft_index:i}));
+      const {data:insertedRows,error}=await db.from('generated_reviews').insert(rows).select('id');
       if(error)console.error('Persist failed',error);
+      else if(insertedRows)reviewIds=insertedRows.map(row=>row.id as string);
     }catch(error){console.error('Persist threw',error)}
 
     // Persist metadata
@@ -639,7 +643,8 @@ Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "
     const totalMs=Date.now()-requestStartMs;
     console.log(`⏱️  TOTAL REQUEST TIME: ${totalMs}ms (DB: ${dbMs}ms + Gemini + overhead)`);
 
-    return reply({success:true,reviews,target_count:TARGET_COUNT,quality:{...metadata,timing_ms:totalMs}});
+    const reviewsWithIds=reviews.map((content,i)=>({id:reviewIds[i],content}));
+    return reply({success:true,reviews:reviewsWithIds,target_count:TARGET_COUNT,quality:{...metadata,timing_ms:totalMs}});
 
   }catch(error){
     const totalMs=Date.now()-requestStartMs;
