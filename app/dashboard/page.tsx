@@ -5,7 +5,7 @@ export const fetchCache = "force-no-store";
 import Link from "next/link";
 import { unstable_noStore as noStore } from "next/cache";
 import { redirect } from "next/navigation";
-import { ArrowUpRight, ClipboardCheck, LockKeyhole, QrCode, ScanLine, Send, Star } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, ClipboardCheck, LockKeyhole, QrCode, ScanLine, Send, Star } from "lucide-react";
 import { displayDoctorName, getAuthenticatedUser, getCurrentDoctor } from "@/lib/dashboard";
 import { DirectLinkShare } from "@/components/direct-link-share";
 import { DashboardAutoRefresh } from "@/components/dashboard-auto-refresh";
@@ -85,7 +85,8 @@ export default async function Dashboard() {
   await syncAnalyticsEventsFromScans(doctor.id);
   const analyticsDb = createAdminClient() || supabase;
   const trendSince=new Date(Date.now()-56*24*60*60*1000).toISOString();
-  const [scansResult, copiedResult, postedResult, recentEventsResult, trendResult, legacyScansResult, legacyCopiedResult, legacyPostedResult, legacyTrendResult] = await Promise.all([
+  const todayStartIso=(()=>{const d=new Date();d.setHours(0,0,0,0);return d.toISOString();})();
+  const [scansResult, copiedResult, postedResult, recentEventsResult, trendResult, legacyScansResult, legacyCopiedResult, legacyPostedResult, legacyTrendResult, genFailuresResult] = await Promise.all([
     analyticsDb.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "scan"),
     analyticsDb.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "copy"),
     analyticsDb.from("analytics_events").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("event_type", "click_maps"),
@@ -95,9 +96,11 @@ export default async function Dashboard() {
     supabase.from("scans").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("review_copied", true),
     supabase.from("scans").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("redirected_to_gmb", true),
     supabase.from("scans").select("id,created_at,review_copied,redirected_to_gmb").eq("doctor_id", doctor.id).gte("created_at", trendSince).order("created_at"),
+    analyticsDb.from("system_error_logs").select("*", { count: "exact", head: true }).eq("doctor_id", doctor.id).eq("endpoint", "generate-review").gte("created_at", todayStartIso),
   ]);
   const analyticsError=scansResult.error||copiedResult.error||postedResult.error||recentEventsResult.error||trendResult.error||legacyScansResult.error||legacyCopiedResult.error||legacyPostedResult.error||legacyTrendResult.error;
   if(analyticsError)console.error("Dashboard analytics partially unavailable; rendering fallback metrics:",analyticsError.message);
+  const generationIssuesToday=genFailuresResult.count??0;
 
   const scans = Math.max(scansResult.count ?? 0, legacyScansResult.count ?? 0);
   const copied = Math.max(copiedResult.count ?? 0, legacyCopiedResult.count ?? 0);
@@ -117,10 +120,18 @@ export default async function Dashboard() {
 
   const heading = <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm font-semibold text-brand">{today}</p><h1 className="mt-1 text-3xl font-extrabold">Good morning, Dr. {displayDoctorName(doctor.doctor_name)}</h1><p className="mt-1 text-slate-500">{isStarter ? "Your Starter plan usage at a glance." : "Here’s what’s happening with your patient reviews."}</p></div><Link href={`/r/${doctor.slug}`} className="btn-primary"><QrCode size={18} />Open patient page</Link></div>;
 
+  const generationNotice = generationIssuesToday >= 3 ? (
+    <div className="mt-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
+      <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-600" />
+      <p className="text-sm font-medium text-amber-900">AI review generation experienced some issues today. Patients may have seen a "try again" message a few times — this usually resolves on its own, but reach out to support if it keeps happening.</p>
+    </div>
+  ) : null;
+
   if (isStarter) return (
     <div className="mx-auto max-w-7xl">
       <DashboardAutoRefresh />
       {heading}
+      {generationNotice}
       <div className="card mt-8 max-w-md p-6">
         <span className="grid h-11 w-11 place-items-center rounded-xl bg-blue-50 text-brand"><ScanLine size={22} /></span>
         <p className="mt-5 text-3xl font-extrabold">Total Scans: {scans.toLocaleString()} / 20</p>
@@ -138,6 +149,7 @@ export default async function Dashboard() {
     <div className="mx-auto max-w-7xl">
       <DashboardAutoRefresh />
       {heading}
+      {generationNotice}
       <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{stats.map(([Icon, label, value]) => <div className="card p-5 transition-shadow duration-300 hover:shadow-md" key={label}><span className="grid h-10 w-10 place-items-center rounded-xl bg-blue-50 text-brand"><Icon size={20}/></span><p className="mt-5 min-h-9 text-3xl font-extrabold tabular-nums">{value}</p><p className="mt-1 text-sm text-slate-500">{label}</p></div>)}</div>
       <div className="mt-5 grid gap-5 xl:grid-cols-2"><TrendChart title="Daily trend" subtitle="Last 14 days" points={dailyPoints}/><TrendChart title="Weekly trend" subtitle="Last 8 weeks" points={weeklyPoints}/></div>
       <div className="mt-5 grid gap-5 xl:grid-cols-[1.45fr_.55fr]">

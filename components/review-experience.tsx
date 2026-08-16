@@ -3,7 +3,7 @@
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Check, Clipboard, ExternalLink, Loader2 } from "lucide-react";
+import { Check, Clipboard, ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
 type Language = "english" | "hinglish";
@@ -16,20 +16,11 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}
 const ThankYouAnimation = dynamic(() => import("./thank-you-animation"), { ssr: false });
 const fallbackTheme = { primary: "#0A4C95", accent: "#F37021", background: "#F8FAFC" };
 const MIN_DETAIL_CHIPS = 2;
-const fallbackReviews: Record<Language, string[]> = {
-  english: [
-    "My clinic visit went well overall.\nThe doctor explained things clearly and the staff was polite.\nI felt comfortable through the appointment.",
-    "The appointment was comfortable and well managed.\nThe team handled things smoothly, and the doctor answered my concerns.\nOverall it felt simple and reassuring.",
-    "I visited with a few doubts in mind.\nThe doctor listened patiently and explained the next steps clearly.\nThe clinic experience felt calm and professional.",
-    "The clinic felt clean and organised.\nThe staff was polite, and the doctor guided me properly.\nOverall, it was a positive visit.",
-  ],
-  hinglish: [
-    "Clinic visit ka experience kaafi acha raha.\nStaff helpful tha aur doctor ne baat clearly samjhai.\nOverall mujhe comfortable feel hua.",
-    "Mera visit smooth raha.\nDoctor ne calmly guide kiya, zyada rush jaisa feel nahi hua.\nClinic ka environment bhi neat tha.",
-    "Aaj ka visit genuinely theek laga.\nStaff ne process simple rakha aur doctor se baat karke confidence aaya.\nMain overall satisfied hoon.",
-    "Clinic mein experience acha tha.\nDoctor aur team ne concerns dhyan se sune.\nFollow-up ke liye bhi clear guidance mili.",
-  ],
-};
+// NOTE: There is deliberately no hardcoded local fallback review text anymore. Showing a patient a
+// pre-written template when generation fails is misleading - they'd see a "review" that never came
+// from AI at all. On failure we now show a clear status message + Try Again button instead (see
+// GENERATION_BUSY_MESSAGE below and the generationFailed state in ReviewExperience).
+const GENERATION_BUSY_MESSAGE = "Our AI review assistant is a bit busy right now. Please try again in a moment.";
 const copy = {
   english: {
     chooseLanguage: "Choose your language",
@@ -102,11 +93,6 @@ const sanitizeLiveInput = (value: string, maxLength: number) => value
   .replace(/[\u0000-\u001f\u007f]/g, " ")
   .slice(0, maxLength);
 const titleCase = (value: string) => value.trim().split(/\s+/).map((part) => part ? `${part[0].toUpperCase()}${part.slice(1).toLowerCase()}` : "").join(" ");
-const pickFallbackReviews = (language: Language) => {
-  const source = fallbackReviews[language];
-  const offset = Math.floor(Math.random() * source.length);
-  return Array.from({ length: 3 }, (_, index) => source[(offset + index) % source.length]);
-};
 
 export function ReviewExperience({
   doctor,
@@ -141,6 +127,7 @@ export function ReviewExperience({
   const [selectedRating, setSelectedRating] = useState<number | null>(null);
   const [hoverRating, setHoverRating] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [generationFailed, setGenerationFailed] = useState(false);
   const [validationError, setValidationError] = useState("");
   const [deviceToken, setDeviceToken] = useState("");
   const [patientLocation, setPatientLocation] = useState<Location | null>(null);
@@ -279,18 +266,18 @@ export function ReviewExperience({
     }
     setLoading(true);
     setValidationError("");
+    setGenerationFailed(false);
     setReviews([]);
     setSelectedChips(chips);
     scrollDraftsIntoView();
     const token = deviceToken || crypto.randomUUID();
     if (!deviceToken) setDeviceToken(token);
-    const fallback = pickFallbackReviews(currentLanguage);
     try {
       const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
       const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
       if (!supabaseUrl || !anonKey) throw new Error("Review generation is not configured.");
       const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 20000); // 20 seconds (allows for DB queries + Gemini + potential retry)
+      const timeout = window.setTimeout(() => controller.abort(), 20000); // 20 seconds (allows for DB queries + Gemini + one internal retry)
       const response = await fetch(`${supabaseUrl.replace(/\/$/, "")}/functions/v1/generate-review`, {
         method: "POST",
         headers: { "Content-Type": "application/json", apikey: anonKey, Authorization: `Bearer ${anonKey}` },
@@ -316,16 +303,26 @@ export function ReviewExperience({
       let data: Record<string, unknown> = {};
       try { data = responseText ? JSON.parse(responseText) as Record<string, unknown> : {}; } catch (error) { console.error("generate-review invalid JSON response", error); }
       const returned = Array.isArray(data.reviews) ? data.reviews.filter((review: unknown): review is string => typeof review === "string" && review.trim().length > 0).map((review) => review.trim()).slice(0, 3) : [];
-      const quality = data.quality && typeof data.quality === "object" ? data.quality as Record<string, unknown> : {};
-      setReviewRating(typeof quality.generated_rating === "number" ? quality.generated_rating : ratingOverride);
-      setReviews(!response.ok || returned.length < 3 ? fallback : returned);
+      // Backend contract: {success:true, reviews:[...]} on real AI output, {success:false, error} on
+      // any failure (Gemini down, both retries exhausted, bad request, etc). Never trust a partial
+      // or malformed payload as a success - if it isn't explicitly success:true with 3 reviews, treat
+      // it as a failure and show the "try again" state rather than guessing at fallback text.
+      if (response.ok && data.success === true && returned.length === 3) {
+        const quality = data.quality && typeof data.quality === "object" ? data.quality as Record<string, unknown> : {};
+        setReviewRating(typeof quality.generated_rating === "number" ? quality.generated_rating : ratingOverride);
+        setReviews(returned);
+        setGenerationFailed(false);
+        const supabase = createClient();
+        if (supabase && analyticsScanIdRef.current) void supabase.functions.invoke("mark-scan", { body: { scan_id: analyticsScanIdRef.current, event: "generated" } });
+      } else {
+        setReviews([]);
+        setGenerationFailed(true);
+      }
       scrollDraftsIntoView();
-      const supabase = createClient();
-      if (supabase && analyticsScanIdRef.current) void supabase.functions.invoke("mark-scan", { body: { scan_id: analyticsScanIdRef.current, event: "generated" } });
     } catch (error) {
-      console.error("generate-review request failed; using local fallback", error);
-      setReviewRating(ratingOverride);
-      setReviews(fallback);
+      console.error("generate-review request failed", error);
+      setReviews([]);
+      setGenerationFailed(true);
       scrollDraftsIntoView();
     } finally {
       setLoading(false);
@@ -394,7 +391,7 @@ export function ReviewExperience({
         {loading && <div className="mt-4 flex min-h-11 items-center justify-center gap-2 rounded-xl bg-blue-50 px-4 py-3 text-xs font-black text-[#0A4C95] sm:mt-5 sm:min-h-12 sm:text-sm"><Loader2 size={16} className="animate-spin sm:size-[18px]" />{t.generating}</div>}
       </section>
 
-      <section ref={draftsSectionRef} className="relative z-30 scroll-mt-4 bg-white py-6 sm:scroll-mt-8 sm:py-8"><div className="flex items-start justify-between gap-3 sm:gap-4"><div className="min-w-0"><h2 className="text-base font-black sm:text-xl">{t.draftsTitle}</h2>{selectedChips.length > 0 && <p className="mt-1.5 break-words text-xs font-bold leading-4 text-slate-500 sm:mt-2 sm:text-sm sm:leading-5">{selectedChips.join(", ")} - {reviewRating} star tone</p>}</div>{loading && <Loader2 size={20} className="shrink-0 animate-spin text-[#0A4C95] sm:size-[24px]" />}</div>{loading ? <div className="mt-5 space-y-3 sm:mt-6 sm:space-y-5" aria-live="polite">{Array.from({ length: 2 }).map((_, index) => <div key={index} className="rounded-xl border border-slate-200 p-3.5 sm:rounded-2xl sm:p-5"><div className="h-3.5 w-28 animate-pulse rounded-full bg-slate-200 sm:h-4 sm:w-32" /><div className="mt-4 space-y-2.5 sm:mt-5 sm:space-y-3"><div className="h-2.5 w-full animate-pulse rounded-full bg-slate-100 sm:h-3" /><div className="h-2.5 w-11/12 animate-pulse rounded-full bg-slate-100 sm:h-3" /><div className="h-2.5 w-8/12 animate-pulse rounded-full bg-slate-100 sm:h-3" /></div><div className="mt-4 h-10 animate-pulse rounded-lg bg-blue-50 sm:mt-5 sm:rounded-xl sm:h-12" /></div>)}</div> : reviews.length ? <div className="mt-5 space-y-4 sm:mt-6 sm:space-y-5">{reviews.map((review, index) => <article key={index} className="rounded-xl border-2 border-slate-200 p-4 sm:rounded-2xl sm:p-5"><div className="flex gap-1.5">{Array.from({ length: 5 }).map((_, star) => <GoogleStar key={star} active={star < reviewRating} size={16} />)}</div><p className="mt-3 whitespace-pre-line break-words text-xs font-semibold leading-5 sm:mt-4 sm:text-base sm:leading-7">{review}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#0A4C95] px-3 text-xs font-black text-white transition active:scale-[.98] sm:mt-5 sm:min-h-12 sm:rounded-xl sm:px-4 sm:text-base"><Clipboard size={16} className="sm:size-[18px]" />{t.copyReview}</button></article>)}</div> : <div className="mt-5 rounded-xl border border-dashed border-slate-300 p-5 text-center text-xs font-bold text-slate-500 sm:mt-6 sm:rounded-2xl sm:p-8 sm:text-sm">{t.empty}</div>}</section>
+      <section ref={draftsSectionRef} className="relative z-30 scroll-mt-4 bg-white py-6 sm:scroll-mt-8 sm:py-8"><div className="flex items-start justify-between gap-3 sm:gap-4"><div className="min-w-0"><h2 className="text-base font-black sm:text-xl">{t.draftsTitle}</h2>{selectedChips.length > 0 && <p className="mt-1.5 break-words text-xs font-bold leading-4 text-slate-500 sm:mt-2 sm:text-sm sm:leading-5">{selectedChips.join(", ")} - {reviewRating} star tone</p>}</div>{loading && <Loader2 size={20} className="shrink-0 animate-spin text-[#0A4C95] sm:size-[24px]" />}</div>{loading ? <div className="mt-5 space-y-3 sm:mt-6 sm:space-y-5" aria-live="polite">{Array.from({ length: 2 }).map((_, index) => <div key={index} className="rounded-xl border border-slate-200 p-3.5 sm:rounded-2xl sm:p-5"><div className="h-3.5 w-28 animate-pulse rounded-full bg-slate-200 sm:h-4 sm:w-32" /><div className="mt-4 space-y-2.5 sm:mt-5 sm:space-y-3"><div className="h-2.5 w-full animate-pulse rounded-full bg-slate-100 sm:h-3" /><div className="h-2.5 w-11/12 animate-pulse rounded-full bg-slate-100 sm:h-3" /><div className="h-2.5 w-8/12 animate-pulse rounded-full bg-slate-100 sm:h-3" /></div><div className="mt-4 h-10 animate-pulse rounded-lg bg-blue-50 sm:mt-5 sm:rounded-xl sm:h-12" /></div>)}</div> : generationFailed ? <div className="mt-5 rounded-xl border-2 border-amber-200 bg-amber-50 p-5 text-center sm:mt-6 sm:rounded-2xl sm:p-8"><p className="text-xs font-bold leading-5 text-amber-900 sm:text-sm sm:leading-6">{GENERATION_BUSY_MESSAGE}</p><button type="button" onClick={() => void generate(selectedRating ?? reviewRating)} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#0A4C95] px-5 text-xs font-black text-white transition active:scale-[.98] sm:mt-5 sm:min-h-12 sm:rounded-xl sm:text-sm"><RefreshCw size={16} className="sm:size-[18px]" />Try Again</button></div> : reviews.length ? <div className="mt-5 space-y-4 sm:mt-6 sm:space-y-5">{reviews.map((review, index) => <article key={index} className="rounded-xl border-2 border-slate-200 p-4 sm:rounded-2xl sm:p-5"><div className="flex gap-1.5">{Array.from({ length: 5 }).map((_, star) => <GoogleStar key={star} active={star < reviewRating} size={16} />)}</div><p className="mt-3 whitespace-pre-line break-words text-xs font-semibold leading-5 sm:mt-4 sm:text-base sm:leading-7">{review}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#0A4C95] px-3 text-xs font-black text-white transition active:scale-[.98] sm:mt-5 sm:min-h-12 sm:rounded-xl sm:px-4 sm:text-base"><Clipboard size={16} className="sm:size-[18px]" />{t.copyReview}</button></article>)}</div> : <div className="mt-5 rounded-xl border border-dashed border-slate-300 p-5 text-center text-xs font-bold text-slate-500 sm:mt-6 sm:rounded-2xl sm:p-8 sm:text-sm">{t.empty}</div>}</section>
     </div>
     <BrandFooter />
 

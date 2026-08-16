@@ -8,15 +8,15 @@ const headers={
 };
 const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers});
 const GEMINI_MODEL=Deno.env.get('GEMINI_MODEL')||'gemini-3.5-flash'; // Use env var, fallback to latest stable model
-// Frontend AbortController allows 20s total (review-experience.tsx). 9s here left Gemini almost no
-// room to finish a fuller, more natural response before being cut off mid-generation - raised to 15s
-// to use most of that budget while still leaving ~5s headroom for DB queries + response overhead.
-const GEMINI_TIMEOUT_MS=15_000;
+// PER-ATTEMPT timeout. Frontend AbortController allows 20s total (review-experience.tsx). Since
+// generation now retries once on failure (worst case: two attempts + backoff), the per-attempt
+// budget must leave room for both: 8s x 2 + up to 800ms backoff + DB/overhead comfortably fits
+// under 20s. A single successful attempt is unaffected - Gemini flash models finish well inside 8s.
+const GEMINI_TIMEOUT_MS=8_000;
 const TARGET_COUNT=3;
 
 type KB={area_name?:unknown;city_name?:unknown;top_services?:unknown};
 type Language='english'|'hinglish';
-type LengthBracket={key:string;min:number;max:number;target:number};
 type ArchetypeKey='A'|'B'|'C'|'D'|'E'|'F'|'G';
 type ClientDigest={
   doctor_id:string;doctor_name:string;clinic_name:string;city:string;specialization:string;
@@ -167,17 +167,6 @@ const hourlyKeywordProbability=(opWindow:ReturnType<typeof operationalWindow>,us
   const base=.45+Math.random()*.10;
   return clamp(base+(pressure*.08),.25,.75);
 };
-const selectLengthBracket=(rating:number):LengthBracket=>{
-  if(rating>=4){
-    const roll=Math.random();
-    if(roll<.60){const target=randomInt(5,8);return {key:'short_mid',min:5,max:8,target}}
-    if(roll<.85){const target=randomInt(9,12);return {key:'comprehensive',min:9,max:12,target}}
-    const target=randomInt(2,3);return {key:'crisp',min:2,max:3,target};
-  }
-  if(rating===3){const target=randomInt(2,4);return {key:'neutral_tight',min:2,max:4,target}}
-  if(rating===1)return {key:'raw_complaint',min:1,max:4,target:randomInt(1,3)};
-  return {key:'low_satisfaction',min:1,max:4,target:randomInt(2,4)};
-};
 const selectArchetype=(recent:string[])=>{
   const recentSet=new Set(recent.filter((key):key is ArchetypeKey=>key in STRUCTURE_ARCHETYPES));
   const candidates=(Object.keys(STRUCTURE_ARCHETYPES) as ArchetypeKey[]).filter(key=>!recentSet.has(key));
@@ -231,19 +220,6 @@ function parseReviews(raw:unknown,expectedCount:number){
   }
 }
 
-function shapeLines(content:string,rating:number,language:Language,lengthBracket=selectLengthBracket(rating)){
-  // NOTE: Removed hardcoded filler padding that was destroying variation
-  // Gemini now handles length entirely - no post-processing padding
-  // This ensures all sentences come from Gemini, every review is unique
-  const shape=lengthBracket;
-  const base=content.replace(/\r/g,'\n').split(/\n+/).map(line=>line.trim()).filter(Boolean);
-  const sentenceLines=content.split(/(?<=[.!?])\s+/).map(line=>line.trim()).filter(Boolean);
-  const lines=(base.length>1?base:sentenceLines).filter(Boolean);
-  // Just return the lines as-is, no padding - let Gemini control length
-  return lines.slice(0,shape.max).join('\n');
-}
-
-
 async function checkDuplicateRisk(db:ReturnType<typeof createClient>,doctorId:string,newReviewOpeningLine:string){
   const recentResult=await db.from('generated_reviews').select('content').eq('doctor_id',doctorId).order('created_at',{ascending:false}).limit(20);
   if(recentResult.error||!recentResult.data)return false;
@@ -258,73 +234,35 @@ async function checkDuplicateRisk(db:ReturnType<typeof createClient>,doctorId:st
   return false;
 }
 
-function emergencyDrafts(language:Language,rating=5,keywords:string[]=[]){
-  const keywordList=keywords.length>0?keywords:['service'];
-  const getKeywordPhrase=()=>{
-    if(keywordList.length===1)return keywordList[0];
-    if(keywordList.length===2)return `${keywordList[0]} and ${keywordList[1]}`;
-    return `${keywordList.slice(0,-1).join(', ')}, and ${keywordList[keywordList.length-1]}`;
-  };
-  const kw1=keywordList[0]||'service';
-  const kw2=keywordList[1]||keywordList[0]||'treatment';
-  const allKw=getKeywordPhrase();
-  if(rating<=2){
-    const seeds=language==='hinglish'
-      ? [
-        `Visit se expectations meet nahi hui.\n${kw1} mein kuch issues the.\n${kw2} ke quality mein improvement needed.\nProcess better ho sakti thi.`,
-        `Experience low satisfaction wala tha.\nCommunication ${kw1} ke baare mein clearer hona chahiye tha.\n${kw2} procedure clear nahi tha.\nMain bas honest feedback de raha hoon.`,
-        `Visit during ${kw1} treatment smooth nahi laga.\n${kw2} ke dauran coordination kharab tha.\nExplanation improve ho sakta tha.`,
-        `${allKw} ke baare mein concerns the.\nFollow-up better ho sakta tha.\nStaff response improve ho sakte the.`,
-      ]
-      : [
-        `The visit did not meet my expectations.\nThe ${kw1} process could be clearer.\n${kw2} quality needs improvement.\nThis needs better handling.`,
-        `My ${kw1} experience felt unsatisfactory.\nCommunication about ${kw2} could have been better.\nI am leaving this as honest feedback.`,
-        `The visit for ${kw1} did not feel smooth.\n${kw2} coordination could be improved.\nExplanation was not clear enough.`,
-        `There were concerns about ${allKw}.\nThe follow-up could have been clearer.\nStaff response could improve.`,
-      ];
-    return seeds.map(seed=>shapeLines(seed,rating,language)).slice(0,TARGET_COUNT);
-  }
-  const seeds=language==='hinglish'
-    ? [
-      `Clinic visit ka experience theek raha.\n${kw1} treatment helpful tha aur doctor ne clearly samjhai.\n${kw2} ke baare mein mujhe confident feel hua.\nOverall mujhe comfortable feel hua.`,
-      `Mera ${kw1} visit simple aur smooth raha.\nDoctor ne ${kw2} ke baare mein calmly guide kiya.\nClinic ka environment bhi neat tha.`,
-      `Aaj ka visit manageable laga.\n${kw1} process clear tha aur ${kw2} ke baare mein samjh bhi mili.\nStaff ka response polite tha.`,
-      `Clinic mein experience comfortable tha.\nDoctor ne ${allKw} ke concerns dhyan se sune.\nFollow-up clear aur helpful mili.`,
-    ]
-    : [
-      `My clinic visit went well overall.\nThe ${kw1} treatment was explained clearly.\nI felt confident about ${kw2}.\nI felt comfortable and satisfied.`,
-      `The appointment was comfortable and well managed.\nThe ${kw1} experience was handled smoothly.\nDoctor explained ${kw2} well.\nOverall it felt reassuring.`,
-      `I visited for ${kw1} with some doubts.\nThe doctor explained ${kw2} carefully.\nThe clinic experience felt professional.`,
-      `The clinic felt clean and organised.\nThe staff addressed ${allKw} comprehensively.\nOverall, it was a positive visit.`,
-    ];
-  return seeds.map(seed=>shapeLines(seed,rating,language)).slice(0,TARGET_COUNT);
-}
+// NOTE: There is deliberately no hardcoded "fallback template" function anymore. A patient must
+// never receive a robotic, pre-written review that looks like it came from the AI when it didn't -
+// that was the previous emergencyDrafts() behaviour. On failure (see the retry loop below), the
+// function now returns {success:false} and the frontend shows a clear "try again" state instead.
+const fail=(error:string,status:number)=>reply({success:false,error},status);
 
 Deno.serve(async(req)=>{
   let db:ReturnType<typeof createClient>|null=null;
   let doctorIdForAudit:string|null=null;
-  const fallbackLanguage:Language='english';
-  let fallbackContext:{language:Language;rating:number;keywords:string[]}={language:fallbackLanguage,rating:5,keywords:[]};
 
   if(req.method==='OPTIONS')return reply({ok:true});
-  if(req.method!=='POST')return reply({reviews:emergencyDrafts(fallbackLanguage),target_count:TARGET_COUNT,quality:{fallback:true}});
+  if(req.method!=='POST')return fail('invalid_request',405);
 
   const requestStartMs=Date.now();
   try{
     // Parse request
     let body:Record<string,unknown>;
     try{body=await req.json()}
-    catch(error){console.error('Invalid JSON',error);return reply({reviews:emergencyDrafts('english'),target_count:TARGET_COUNT,quality:{fallback:true}})}
+    catch(error){console.error('Invalid JSON',error);return fail('invalid_request',400)}
 
     const doctorId=sanitizeText(body.doctor_id,80);
     doctorIdForAudit=doctorId;
-    if(!doctorId||!uuidPattern.test(doctorId))return reply({reviews:emergencyDrafts('english'),target_count:TARGET_COUNT,quality:{fallback:true}});
+    if(!doctorId||!uuidPattern.test(doctorId))return fail('invalid_request',400);
 
     // Initialize DB
     const url=Deno.env.get('SUPABASE_URL'),serviceKey=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),geminiKey=Deno.env.get('GEMINI_API_KEY');
     if(!url||!serviceKey||!geminiKey){
       console.error('Missing secrets');
-      return reply({reviews:emergencyDrafts('english'),target_count:TARGET_COUNT,quality:{fallback:true}});
+      return fail('configuration_error',500);
     }
     db=createClient(url,serviceKey);
 
@@ -332,7 +270,7 @@ Deno.serve(async(req)=>{
     const language:Language=body.language==='hinglish'?'hinglish':'english';
     const rating=Math.min(5,Math.max(1,Math.round(Number(body.rating)||5)));
     const deviceToken=sanitizeText(body.device_token,128);
-    if(!deviceToken)return reply({error:'Unable to verify device'},400);
+    if(!deviceToken)return fail('invalid_request',400);
 
     // Precheck - return routing info quickly
     if(body.precheck_only===true){
@@ -363,7 +301,7 @@ Deno.serve(async(req)=>{
     if(!doctor){
       console.error('Doctor not found');
       void logSystemError(db,doctorId,'Doctor not found or inactive');
-      return reply({reviews:emergencyDrafts(language),target_count:TARGET_COUNT,quality:{fallback:true}});
+      return fail('not_found',404);
     }
 
     const aiSettings=aiSettingsResult.status==='fulfilled'?aiSettingsResult.value.data:null;
@@ -403,7 +341,6 @@ Deno.serve(async(req)=>{
       rating,
       language,
     };
-    fallbackContext={language,rating,keywords:digest.selected_chips.length?digest.selected_chips:digest.high_priority_keywords};
 
     // Build unified prompt
     const selectedArchetypeKey=mapToneToArchetype(digest.tone_preference,[]);
@@ -517,67 +454,78 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
     console.log('📤 Sending to Gemini prompt with keywords:',digest.high_priority_keywords);
     console.log('Prompt length:',prompt.length,'chars');
 
-    const geminiStartMs=Date.now();
-    const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},GEMINI_TIMEOUT_MS);
-    const geminiMs=Date.now()-geminiStartMs;
-    console.log(`⏱️  Gemini API call: ${geminiMs}ms`);
-
-    if(!response.ok){
-      const errText=await response.text();
-      console.error('❌ GEMINI API ERROR',{status:response.status,error:errText.slice(0,500)});
-      void logSystemError(db,doctorId,`Gemini ${response.status}: ${errText.slice(0,300)}`);
-      const fallback=emergencyDrafts(language,rating,digest.selected_chips);
-      console.log('⚠️  USING FALLBACK (API ERROR) - emergencyDrafts called with keywords:',digest.selected_chips);
-      return reply({reviews:fallback,target_count:TARGET_COUNT,quality:{fallback:true,api_error:true}});
+    // STEP 1: one automatic, silent retry before giving up. Most Gemini failures (network blip,
+    // momentary slowness, an occasional truncated/malformed response) are transient - a second
+    // attempt recovers the majority of them without the patient ever knowing attempt 1 failed.
+    const MAX_ATTEMPTS=2;
+    let reviews:string[]|null=null;
+    let lastFailureReason='unknown';
+    for(let attempt=1;attempt<=MAX_ATTEMPTS;attempt++){
+      const attemptStartMs=Date.now();
+      try{
+        const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},GEMINI_TIMEOUT_MS);
+        console.log(`⏱️  Attempt ${attempt}/${MAX_ATTEMPTS} Gemini API call: ${Date.now()-attemptStartMs}ms`);
+        if(!response.ok){
+          const errText=await response.text();
+          lastFailureReason=`api_error_${response.status}`;
+          console.error(`❌ Attempt ${attempt}/${MAX_ATTEMPTS} failed - GEMINI API ERROR`,{status:response.status,error:errText.slice(0,500)});
+        }else{
+          const envelope=await response.json() as any;
+          const parts=envelope?.candidates?.[0]?.content?.parts;
+          if(!Array.isArray(parts)){
+            lastFailureReason='invalid_response_structure';
+            console.error(`❌ Attempt ${attempt}/${MAX_ATTEMPTS} failed - INVALID RESPONSE STRUCTURE`,{parts});
+          }else{
+            const modelText=parts.map((p:any)=>typeof p.text==='string'?p.text:'').filter(Boolean).join('\n');
+            console.log(`📥 Attempt ${attempt}/${MAX_ATTEMPTS} RAW GEMINI RESPONSE:\n`,modelText);
+            const parsed=parseReviews(modelText,TARGET_COUNT);
+            if(parsed.length===TARGET_COUNT){
+              reviews=parsed;
+              console.log(`✅ Attempt ${attempt}/${MAX_ATTEMPTS} succeeded - parsed ${parsed.length} reviews`);
+            }else{
+              lastFailureReason='parse_failed_or_truncated';
+              console.error(`❌ Attempt ${attempt}/${MAX_ATTEMPTS} failed - parsed ${parsed.length}/${TARGET_COUNT} reviews (malformed or truncated JSON)`);
+            }
+          }
+        }
+      }catch(error){
+        lastFailureReason=error instanceof Error&&/SLA/.test(error.message)?'timeout':'network_error';
+        console.error(`❌ Attempt ${attempt}/${MAX_ATTEMPTS} threw`,error instanceof Error?error.message:String(error));
+      }
+      if(reviews)break;
+      if(attempt<MAX_ATTEMPTS){
+        const backoffMs=400+Math.floor(Math.random()*400);
+        console.log(`⏳ Retrying in ${backoffMs}ms (attempt 1 failure kept internal, not shown to patient)...`);
+        await new Promise(resolve=>setTimeout(resolve,backoffMs));
+      }
     }
 
-    const envelope=await response.json() as any;
-    const parts=envelope?.candidates?.[0]?.content?.parts;
-    if(!Array.isArray(parts)){
-      console.error('❌ INVALID RESPONSE STRUCTURE - parts is not array',{parts});
-      const fallback=emergencyDrafts(language,rating,digest.selected_chips);
-      console.log('⚠️  USING FALLBACK (PARSE ERROR) - emergencyDrafts called with keywords:',digest.selected_chips);
-      return reply({reviews:fallback,target_count:TARGET_COUNT,quality:{fallback:true,parse_error:true}});
+    // STEP 2: both attempts failed - return a clear failure, never the old hardcoded template.
+    if(!reviews){
+      console.error(`❌ Both Gemini attempts failed. Last reason: ${lastFailureReason}. Returning success:false to client.`);
+      void logSystemError(db,doctorId,`Gemini generation failed after ${MAX_ATTEMPTS} attempts: ${lastFailureReason}`);
+      return fail('generation_unavailable',503);
     }
 
-    const modelText=parts.map((p:any)=>typeof p.text==='string'?p.text:'').filter(Boolean).join('\n');
-    console.log('📥 RAW GEMINI RESPONSE (BEFORE ANY POST-PROCESSING):\n',modelText);
-
-    let reviews=parseReviews(modelText,TARGET_COUNT);
-    console.log('✅ PARSED',reviews.length,'reviews from Gemini');
-    console.log('📋 PARSED REVIEWS (raw, no post-processing yet):');
+    console.log('📋 FINAL REVIEWS (from Gemini, no post-processing):');
     reviews.forEach((r,i)=>console.log(`\n=== Review ${i+1} ===\n${r}`));
 
-    // Lightweight duplicate check - only check first line
-    if(reviews.length===TARGET_COUNT){
-      console.log('🔍 Checking duplicates against',recentReviews.length,'recent reviews');
-      const recentFirstLines=recentReviews.map(r=>{
-        const firstLine=(typeof r.content==='string'?r.content:'').split(/\n/)[0]?.toLowerCase()||'';
-        return firstLine.split(/\s+/).slice(0,6).join(' ');
-      });
-
-      // NOTE: Duplicate retry disabled to prevent timeout (was making second API call)
-      // Duplicates will be handled by fallback if needed
-      let duplicateCount=0;
-      for(let i=0;i<reviews.length;i++){
-        const newFirstLine=reviews[i].split(/\n/)[0]?.toLowerCase().split(/\s+/).slice(0,6).join(' ')||'';
-        for(const recentLine of recentFirstLines){
-          const common=newFirstLine.split(/\s+/).filter(w=>recentLine.includes(w)).length;
-          const similarity=common/Math.max(newFirstLine.split(/\s+/).length,1);
-          if(similarity>0.65){duplicateCount++;break}
-        }
+    // Lightweight duplicate check - informational only, does not block the response
+    console.log('🔍 Checking duplicates against',recentReviews.length,'recent reviews');
+    const recentFirstLines=recentReviews.map(r=>{
+      const firstLine=(typeof r.content==='string'?r.content:'').split(/\n/)[0]?.toLowerCase()||'';
+      return firstLine.split(/\s+/).slice(0,6).join(' ');
+    });
+    let duplicateCount=0;
+    for(let i=0;i<reviews.length;i++){
+      const newFirstLine=reviews[i].split(/\n/)[0]?.toLowerCase().split(/\s+/).slice(0,6).join(' ')||'';
+      for(const recentLine of recentFirstLines){
+        const common=newFirstLine.split(/\s+/).filter(w=>recentLine.includes(w)).length;
+        const similarity=common/Math.max(newFirstLine.split(/\s+/).length,1);
+        if(similarity>0.65){duplicateCount++;break}
       }
-      if(duplicateCount>0)console.log('ℹ️  Detected',duplicateCount,'potential duplicates (retry disabled for performance)');
     }
-
-    // Fallback if not enough reviews
-    if(reviews.length<TARGET_COUNT){
-      console.log('⚠️  Only',reviews.length,'reviews from Gemini, using emergencyDrafts with keywords:',digest.selected_chips);
-      reviews=[...reviews,...emergencyDrafts(language,rating,digest.selected_chips)].slice(0,TARGET_COUNT);
-      console.log('ℹ️  Total after fallback:',reviews.length);
-    }else{
-      console.log('✅ All',reviews.length,'reviews from Gemini (no fallback needed)');
-    }
+    if(duplicateCount>0)console.log('ℹ️  Detected',duplicateCount,'potential duplicates (informational only)');
 
     // NOTE: Post-processing DISABLED - New narrative-style prompt handles all injections
     // (doctor name, patient name/area, keywords) naturally in Gemini's response
@@ -652,14 +600,14 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
     }
 
     const totalMs=Date.now()-requestStartMs;
-    console.log(`⏱️  TOTAL REQUEST TIME: ${totalMs}ms (DB: ${dbMs}ms + Gemini: ${geminiMs}ms + overhead)`);
+    console.log(`⏱️  TOTAL REQUEST TIME: ${totalMs}ms (DB: ${dbMs}ms + Gemini + overhead)`);
 
-    return reply({reviews,target_count:TARGET_COUNT,quality:{...metadata,timing_ms:totalMs}});
+    return reply({success:true,reviews,target_count:TARGET_COUNT,quality:{...metadata,timing_ms:totalMs}});
 
   }catch(error){
     const totalMs=Date.now()-requestStartMs;
     console.error('❌ Unhandled error after',totalMs,'ms:',error);
     void logSystemError(db,doctorIdForAudit,error instanceof Error?error.message:String(error));
-    return reply({reviews:emergencyDrafts(fallbackContext.language,fallbackContext.rating,fallbackContext.keywords),target_count:TARGET_COUNT,quality:{fallback:true,error_after_ms:totalMs}});
+    return fail('generation_unavailable',503);
   }
 });
