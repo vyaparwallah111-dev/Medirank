@@ -170,8 +170,9 @@ export function ReviewExperience({
     if (!supabase || !uuidPattern.test(doctor.id)) return;
     void supabase
       .from("doctor_keywords")
-      .select("keyword,category")
+      .select("keyword,category,is_active")
       .eq("doctor_id", doctor.id)
+      .eq("is_active", true)
       .order("created_at")
       .then(({ data, error }) => {
         if (cancelled) return;

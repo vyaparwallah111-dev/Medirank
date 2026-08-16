@@ -9,11 +9,11 @@ export default async function Keywords(){
   const {supabase,user}=await getAuthenticatedUser();
   if(!doctor?.id||!user?.id)redirect('/onboarding');
   if(doctor?.auth_user_id!==user?.id)throw new Error('Forbidden');
-  let {data:items,error}=await supabase.from('doctor_keywords').select('id,keyword,category').eq('doctor_id',doctor.id).order('created_at');
+  let {data:items,error}=await supabase.from('doctor_keywords').select('id,keyword,category,is_active').eq('doctor_id',doctor.id).order('created_at');
   if(error)throw new Error(error.message);
   if(!items?.length){
     const specialization=(doctor.specialization||'').toLowerCase(),key=Object.keys(defaults).find(k=>specialization.includes(k)),seed=defaults[key||'default'];
-    const result=await supabase.from('doctor_keywords').insert(seed.map(x=>({...x,doctor_id:doctor.id}))).select('id,keyword,category');
+    const result=await supabase.from('doctor_keywords').insert(seed.map(x=>({...x,doctor_id:doctor.id,is_active:true}))).select('id,keyword,category,is_active');
     if(result.error)throw new Error(result.error.message);
     items=result.data;
   }
