@@ -588,10 +588,10 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
     // duplication by modifying content sequentially, each calling shapeLines()
     // Now: Gemini generates complete, natural reviews - no post-processing needed
 
-    console.log('\n🔍 FINAL OUTPUT COMPARISON:');
+    console.log('\n🔍 FINAL REVIEW OUTPUT:');
     console.log('='.repeat(60));
     reviews.forEach((r,i)=>{
-      console.log(`\n### FINAL REVIEW ${i+1} (after all post-processing):`);
+      console.log(`\n### REVIEW ${i+1} (from Gemini, no post-processing):`);
       console.log(r);
       console.log('\nKeyword check:');
       digest.high_priority_keywords.forEach(kw=>{
@@ -600,7 +600,6 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
       });
     });
     console.log('\n='.repeat(60));
-    console.log('⚠️  If all 3 reviews end with IDENTICAL lines, shapeLines() padding is still active!');
 
     // Save metadata
     const metadata={
