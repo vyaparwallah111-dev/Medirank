@@ -685,7 +685,7 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
 
     // Persist metadata
     try{
-      const {error}=await db.from('review_generation_meta').insert({
+      const metadataRow={
         doctor_id:doctorId,
         rating,
         language,
@@ -694,9 +694,24 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
         personality_variant:personalityVariant,
         casing_profile:casingProfile,
         created_at:new Date().toISOString(),
+      };
+      console.log('📊 Inserting metadata with columns:',Object.keys(metadataRow));
+      const {error}=await db.from('review_generation_meta').insert(metadataRow);
+      if(error){
+        console.error('❌ Meta persist failed',{
+          error_message:error.message,
+          error_code:error.code,
+          columns_attempted:Object.keys(metadataRow),
+        });
+      }else{
+        console.log('✅ Metadata persisted successfully');
+      }
+    }catch(error){
+      console.error('❌ Meta persist exception',{
+        message:error instanceof Error?error.message:String(error),
+        stack:error instanceof Error?error.stack:undefined,
       });
-      if(error)console.error('Meta persist failed',error);
-    }catch(error){console.error('Meta persist threw',error)}
+    }
 
     const totalMs=Date.now()-requestStartMs;
     console.log(`⏱️  TOTAL REQUEST TIME: ${totalMs}ms (DB: ${dbMs}ms + Gemini: ${geminiMs}ms + overhead)`);
