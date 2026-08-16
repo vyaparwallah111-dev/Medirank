@@ -3,7 +3,7 @@
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Check, Clipboard, ExternalLink, Loader2, RefreshCw } from "lucide-react";
+import { Check, Clipboard, ExternalLink, Loader2, RefreshCw, Sparkles } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
 type Language = "english" | "hinglish";
@@ -30,7 +30,8 @@ const copy = {
     chipsHint: "These options are managed by the clinic.",
     minChips: "Select at least 2 highlights to continue.",
     ratingRequired: "Please select your star rating first.",
-    generating: "Writing your drafts...",
+    brandWriting: "MediRank is writing your reviews...",
+    generating: "This takes just a few seconds",
     generatingSlow: "Still working on it, almost there...",
     draftsTitle: "Choose your favorite draft",
     copyReview: "Copy Review",
@@ -40,7 +41,6 @@ const copy = {
     google: "Open Google Maps to Paste Review",
     noGoogle: "Google Maps link is not configured for this clinic.",
     empty: "Select a rating and highlights to generate review options.",
-    next: "Next",
     back: "Back",
     stepOf: (step: number, total: number) => `Step ${step} of ${total}`,
   },
@@ -52,7 +52,8 @@ const copy = {
     chipsHint: "Ye options clinic dashboard se aate hain.",
     minChips: "Aage badhne ke liye kam se kam 2 highlights select karein.",
     ratingRequired: "Pehle apni star rating select karein.",
-    generating: "Aapke drafts ban rahe hain...",
+    brandWriting: "MediRank aapka review likh raha hai...",
+    generating: "Bas kuch second lagenge",
     generatingSlow: "Thoda time lag raha hai, bas ho hi gaya...",
     draftsTitle: "Apna favorite draft chunein",
     copyReview: "Review Copy Karein",
@@ -62,7 +63,6 @@ const copy = {
     google: "Google Maps kholein aur review paste karein",
     noGoogle: "Is clinic ka Google Maps link configure nahi hai.",
     empty: "Rating aur highlights select karke review options generate karein.",
-    next: "Aage",
     back: "Peeche",
     stepOf: (step: number, total: number) => `Step ${step} of ${total}`,
   },
@@ -132,6 +132,10 @@ export function ReviewExperience({
   const analyticsScanIdRef = useRef<string | null>(scanId);
   const scanInitializedRef = useRef(false);
   const draftsSectionRef = useRef<HTMLElement | null>(null);
+  // Guards the chips->drafts auto-advance below so it fires exactly once per unique chip
+  // combination, not on every re-render or every time selectedChips happens to still equal 2
+  // (e.g. after using Back to return to the chips step).
+  const autoGenerationKeyRef = useRef("");
 
   const t = currentLanguage ? copy[currentLanguage] : copy.english;
   const doctorName = titleCase(doctor.doctor_name.replace(/^dr\.?\s*/i, ""));
@@ -209,6 +213,25 @@ export function ReviewExperience({
     return () => window.clearTimeout(timer);
   }, [loading]);
 
+  // Auto-advance chips -> drafts the moment MIN_DETAIL_CHIPS is reached - no explicit "Next" tap
+  // needed. Effect (not an inline call in toggleChip) so it always reads the latest selectedChips/
+  // selectedRating rather than a value captured in a stale closure, and the ref guard stops it
+  // re-firing for the same combination (e.g. if the patient uses Back to return to this step
+  // without changing anything).
+  useEffect(() => {
+    if (step !== 2 || loading || !selectedRating || selectedChips.length !== MIN_DETAIL_CHIPS) return;
+    const generationKey = `${selectedChips.join("|")}:${selectedRating}`;
+    if (autoGenerationKeyRef.current === generationKey) return;
+    autoGenerationKeyRef.current = generationKey;
+    const chips = unique(selectedChips.map((chip) => sanitizeText(chip, 80))).slice(0, 5);
+    const timer = window.setTimeout(() => {
+      setStep(3);
+      scrollToTop();
+      void generate(selectedRating, chips);
+    }, 350); // brief pause so the 2nd chip's checkmark is visible before the screen changes
+    return () => window.clearTimeout(timer);
+  }, [step, loading, selectedChips, selectedRating]);
+
   function rememberScanId(nextScanId?: string) {
     if (!nextScanId) return;
     analyticsScanIdRef.current = nextScanId;
@@ -226,6 +249,9 @@ export function ReviewExperience({
     setHoverRating(null);
     setSelectedRating(value);
     setValidationError("");
+    // Auto-advance to the chips step - no separate "Next" tap needed. Brief pause so the star-fill
+    // animation is visible before the screen changes.
+    window.setTimeout(() => goToStep(2), 300);
   }
 
   function scrollToTop() {
@@ -238,16 +264,9 @@ export function ReviewExperience({
     scrollToTop();
   }
 
-  function proceedToChips() {
-    if (!selectedRating) { setValidationError(t.ratingRequired); return; }
-    goToStep(2);
-  }
-
-  function proceedToDrafts() {
+  function retryGenerate() {
+    if (!selectedRating) return;
     const chips = unique(selectedChips.map((chip) => sanitizeText(chip, 80))).slice(0, 5);
-    if (chips.length < MIN_DETAIL_CHIPS) { setValidationError(t.minChips); return; }
-    setSelectedChips(chips);
-    goToStep(3);
     void generate(selectedRating ?? 0, chips);
   }
 
@@ -388,14 +407,14 @@ export function ReviewExperience({
       <StepDots current={stepNumber} />
 
       {/* STEP 1: rating - only this section is visible, no long stacked-scroll form */}
-      {step === 1 && <section className="relative z-30 bg-white py-2 sm:py-4"><div className="text-center"><p className="text-xs font-black uppercase tracking-[.12em] text-[#0A4C95] sm:tracking-[.18em]">{t.ratingStepTitle} <span className="text-red-600">*</span></p><div className="mt-5 flex justify-center gap-2 sm:mt-6 sm:gap-3" role="radiogroup" aria-label="Select star rating" onMouseLeave={() => setHoverRating(null)}>{Array.from({ length: 5 }).map((_, index) => { const value = index + 1; const previewRating = hoverRating ?? selectedRating ?? 0; return <button key={value} type="button" role="radio" aria-checked={selectedRating === value} onMouseEnter={() => { if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) setHoverRating(value); }} onFocus={() => setHoverRating(value)} onBlur={() => setHoverRating(null)} onTouchStart={(event) => { event.preventDefault(); selectRating(value); }} onClick={() => selectRating(value)} className="group grid h-12 w-12 touch-manipulation place-items-center rounded-full transition-colors duration-75 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4285F4] active:bg-slate-200 sm:h-14 sm:w-14 sm:hover:bg-slate-100"><GoogleStar active={value <= previewRating} size={36} /></button>; })}</div><p className="mt-4 min-h-6 text-xs font-extrabold text-slate-700 sm:mt-5 sm:text-sm">{selectedRating ? selectedRating >= 5 ? "Loved it" : selectedRating === 4 ? "Good, with small feedback" : "Needs improvement" : "Select your rating"}</p></div>{validationError && <p className="mt-5 rounded-xl bg-red-50 px-4 py-3 text-xs font-black text-red-700 sm:mt-6 sm:px-5 sm:py-3.5 sm:text-sm">{validationError}</p>}<button type="button" onClick={proceedToChips} disabled={!selectedRating} className="mt-6 min-h-12 w-full rounded-2xl bg-[#0A4C95] text-sm font-black text-white shadow-lg transition active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-40 sm:mt-8 sm:min-h-14 sm:text-base">{t.next}</button></section>}
+      {step === 1 && <section className="relative z-30 bg-white py-2 sm:py-4"><div className="text-center"><p className="text-xs font-black uppercase tracking-[.12em] text-[#0A4C95] sm:tracking-[.18em]">{t.ratingStepTitle} <span className="text-red-600">*</span></p><div className="mt-5 flex justify-center gap-2 sm:mt-6 sm:gap-3" role="radiogroup" aria-label="Select star rating" onMouseLeave={() => setHoverRating(null)}>{Array.from({ length: 5 }).map((_, index) => { const value = index + 1; const previewRating = hoverRating ?? selectedRating ?? 0; return <button key={value} type="button" role="radio" aria-checked={selectedRating === value} onMouseEnter={() => { if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) setHoverRating(value); }} onFocus={() => setHoverRating(value)} onBlur={() => setHoverRating(null)} onTouchStart={(event) => { event.preventDefault(); selectRating(value); }} onClick={() => selectRating(value)} className="group grid h-12 w-12 touch-manipulation place-items-center rounded-full transition-colors duration-75 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4285F4] active:bg-slate-200 sm:h-14 sm:w-14 sm:hover:bg-slate-100"><GoogleStar active={value <= previewRating} size={36} /></button>; })}</div><p className="mt-4 min-h-6 text-xs font-extrabold text-slate-700 sm:mt-5 sm:text-sm">{selectedRating ? selectedRating >= 5 ? "Loved it" : selectedRating === 4 ? "Good, with small feedback" : "Needs improvement" : "Select your rating"}</p></div>{validationError && <p className="mt-5 rounded-xl bg-red-50 px-4 py-3 text-xs font-black text-red-700 sm:mt-6 sm:px-5 sm:py-3.5 sm:text-sm">{validationError}</p>}</section>}
 
       {/* STEP 2: highlight chips */}
-      {step === 2 && <section className="relative z-30 bg-white py-2 sm:py-4"><div className="flex items-center justify-between gap-3 sm:gap-4"><div className="min-w-0"><h2 className="text-base font-black sm:text-xl">{t.chipsTitle}</h2><p className="mt-1 text-xs font-bold leading-4 text-slate-500 sm:mt-1.5 sm:leading-5">{t.chipsHint}</p></div><span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-[#0A4C95] sm:px-3 sm:py-1.5">{selectedChips.length}/{MIN_DETAIL_CHIPS}</span></div><div className="mt-4 grid grid-cols-1 gap-2.5 min-[360px]:grid-cols-2 sm:mt-5 sm:gap-3">{chipOptions.map((value) => <button key={value} type="button" aria-pressed={selectedChips.includes(value)} onClick={() => toggleChip(value)} className={`min-h-12 rounded-xl border-2 px-3 py-2.5 text-left text-xs font-black leading-4 transition active:scale-[.98] sm:min-h-14 sm:rounded-2xl sm:px-4 sm:py-3 sm:text-sm sm:leading-5 ${selectedChips.includes(value) ? "border-[#0A4C95] bg-blue-50 text-[#0A4C95] shadow-md" : "border-slate-200 bg-white text-slate-950 shadow-sm"}`}><span className="flex min-w-0 items-center gap-2 break-words">{selectedChips.includes(value) && <Check size={16} className="shrink-0 sm:size-[17px]" />}{value}</span></button>)}</div>{validationError && <p className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-xs font-black text-red-700 sm:mt-5 sm:px-5 sm:py-3.5 sm:text-sm">{validationError}</p>}<div className="mt-6 flex gap-3 sm:mt-8"><button type="button" onClick={() => goToStep(1)} className="min-h-12 shrink-0 rounded-2xl border-2 border-slate-200 bg-white px-5 text-sm font-black text-slate-700 transition active:scale-[.98] sm:min-h-14 sm:text-base">{t.back}</button><button type="button" onClick={proceedToDrafts} disabled={selectedChips.length < MIN_DETAIL_CHIPS} className="min-h-12 flex-1 rounded-2xl bg-[#0A4C95] text-sm font-black text-white shadow-lg transition active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-14 sm:text-base">{t.next}</button></div></section>}
+      {step === 2 && <section className="relative z-30 bg-white py-2 sm:py-4"><div className="flex items-center justify-between gap-3 sm:gap-4"><div className="min-w-0"><h2 className="text-base font-black sm:text-xl">{t.chipsTitle}</h2><p className="mt-1 text-xs font-bold leading-4 text-slate-500 sm:mt-1.5 sm:leading-5">{t.chipsHint}</p></div><span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-[#0A4C95] sm:px-3 sm:py-1.5">{selectedChips.length}/{MIN_DETAIL_CHIPS}</span></div><div className="mt-4 grid grid-cols-1 gap-2.5 min-[360px]:grid-cols-2 sm:mt-5 sm:gap-3">{chipOptions.map((value) => <button key={value} type="button" aria-pressed={selectedChips.includes(value)} onClick={() => toggleChip(value)} className={`min-h-12 rounded-xl border-2 px-3 py-2.5 text-left text-xs font-black leading-4 transition active:scale-[.98] sm:min-h-14 sm:rounded-2xl sm:px-4 sm:py-3 sm:text-sm sm:leading-5 ${selectedChips.includes(value) ? "border-[#0A4C95] bg-blue-50 text-[#0A4C95] shadow-md" : "border-slate-200 bg-white text-slate-950 shadow-sm"}`}><span className="flex min-w-0 items-center gap-2 break-words">{selectedChips.includes(value) && <Check size={16} className="shrink-0 sm:size-[17px]" />}{value}</span></button>)}</div>{validationError && <p className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-xs font-black text-red-700 sm:mt-5 sm:px-5 sm:py-3.5 sm:text-sm">{validationError}</p>}<p className="mt-2 text-center text-xs font-bold text-slate-400 sm:text-sm">{t.minChips}</p><button type="button" onClick={() => goToStep(1)} className="mt-6 min-h-12 w-full rounded-2xl border-2 border-slate-200 bg-white text-sm font-black text-slate-700 transition active:scale-[.98] sm:mt-8 sm:min-h-14 sm:text-base">{t.back}</button></section>}
 
       {/* STEP 3: loading -> drafts. This step can scroll internally (3 full reviews won't fit one
           screen) - steps 1-2 above never need scrolling since only one is ever rendered. */}
-      {step === 3 && <section ref={draftsSectionRef} className="relative z-30 bg-white py-2 sm:py-4"><div className="flex items-start justify-between gap-3 sm:gap-4"><div className="min-w-0"><h2 className="text-base font-black sm:text-xl">{t.draftsTitle}</h2>{selectedChips.length > 0 && <p className="mt-1.5 break-words text-xs font-bold leading-4 text-slate-500 sm:mt-2 sm:text-sm sm:leading-5">{selectedChips.join(", ")} - {reviewRating} star tone</p>}</div>{loading && <Loader2 size={20} className="shrink-0 animate-spin text-[#0A4C95] sm:size-[24px]" />}</div>{loading ? <div className="mt-5 space-y-3 sm:mt-6 sm:space-y-5" aria-live="polite"><p className="text-xs font-black text-[#0A4C95] sm:text-sm">{loadingSlow ? t.generatingSlow : t.generating}</p>{Array.from({ length: 2 }).map((_, index) => <div key={index} className="rounded-xl border border-slate-200 p-3.5 sm:rounded-2xl sm:p-5"><div className="h-3.5 w-28 animate-pulse rounded-full bg-slate-200 sm:h-4 sm:w-32" /><div className="mt-4 space-y-2.5 sm:mt-5 sm:space-y-3"><div className="h-2.5 w-full animate-pulse rounded-full bg-slate-100 sm:h-3" /><div className="h-2.5 w-11/12 animate-pulse rounded-full bg-slate-100 sm:h-3" /><div className="h-2.5 w-8/12 animate-pulse rounded-full bg-slate-100 sm:h-3" /></div><div className="mt-4 h-10 animate-pulse rounded-lg bg-blue-50 sm:mt-5 sm:rounded-xl sm:h-12" /></div>)}</div> : generationFailed ? <div className="mt-5 rounded-xl border-2 border-amber-200 bg-amber-50 p-5 text-center sm:mt-6 sm:rounded-2xl sm:p-8"><p className="text-xs font-bold leading-5 text-amber-900 sm:text-sm sm:leading-6">{GENERATION_BUSY_MESSAGE}</p><button type="button" onClick={() => void generate(selectedRating ?? reviewRating, selectedChips)} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#0A4C95] px-5 text-xs font-black text-white transition active:scale-[.98] sm:mt-5 sm:min-h-12 sm:rounded-xl sm:text-sm"><RefreshCw size={16} className="sm:size-[18px]" />Try Again</button></div> : reviews.length ? <div className="mt-5 space-y-4 sm:mt-6 sm:space-y-5">{reviews.map((review, index) => <article key={review.id ?? index} className="rounded-xl border-2 border-slate-200 p-4 sm:rounded-2xl sm:p-5"><div className="flex gap-1.5">{Array.from({ length: 5 }).map((_, star) => <GoogleStar key={star} active={star < reviewRating} size={16} />)}</div><p className="mt-3 whitespace-pre-line break-words text-xs font-semibold leading-5 sm:mt-4 sm:text-base sm:leading-7">{review.content}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#0A4C95] px-3 text-xs font-black text-white transition active:scale-[.98] sm:mt-5 sm:min-h-12 sm:rounded-xl sm:px-4 sm:text-base"><Clipboard size={16} className="sm:size-[18px]" />{t.copyReview}</button></article>)}</div> : <div className="mt-5 rounded-xl border border-dashed border-slate-300 p-5 text-center text-xs font-bold text-slate-500 sm:mt-6 sm:rounded-2xl sm:p-8 sm:text-sm">{t.empty}</div>}{!loading && <button type="button" onClick={() => goToStep(2)} className="mt-5 min-h-11 w-full rounded-xl border-2 border-slate-200 bg-white text-xs font-black text-slate-700 transition active:scale-[.98] sm:mt-6 sm:min-h-12 sm:text-sm">{t.back}</button>}</section>}
+      {step === 3 && <section ref={draftsSectionRef} className="relative z-30 bg-white py-2 sm:py-4">{!loading && <div className="flex items-start justify-between gap-3 sm:gap-4"><div className="min-w-0"><h2 className="text-base font-black sm:text-xl">{t.draftsTitle}</h2>{selectedChips.length > 0 && <p className="mt-1.5 break-words text-xs font-bold leading-4 text-slate-500 sm:mt-2 sm:text-sm sm:leading-5">{selectedChips.join(", ")} - {reviewRating} star tone</p>}</div></div>}{loading ? <div className="flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-blue-100 bg-blue-50/40 px-4 py-10 text-center sm:py-14" aria-live="polite"><span className="grid h-14 w-14 place-items-center rounded-2xl bg-[#0A4C95] text-white shadow-lg sm:h-16 sm:w-16"><Sparkles size={26} className="animate-pulse" /></span><div><p className="text-sm font-black text-[#0A4C95] sm:text-base">{t.brandWriting}</p><p className="mt-1.5 text-xs font-bold text-slate-500 sm:text-sm">{loadingSlow ? t.generatingSlow : t.generating}</p></div><div className="flex gap-1.5"><span className="h-2 w-2 animate-bounce rounded-full bg-[#0A4C95]" style={{ animationDelay: "0ms" }} /><span className="h-2 w-2 animate-bounce rounded-full bg-[#0A4C95]" style={{ animationDelay: "150ms" }} /><span className="h-2 w-2 animate-bounce rounded-full bg-[#0A4C95]" style={{ animationDelay: "300ms" }} /></div></div> : generationFailed ? <div className="mt-5 rounded-xl border-2 border-amber-200 bg-amber-50 p-5 text-center sm:mt-6 sm:rounded-2xl sm:p-8"><p className="text-xs font-bold leading-5 text-amber-900 sm:text-sm sm:leading-6">{GENERATION_BUSY_MESSAGE}</p><button type="button" onClick={retryGenerate} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#0A4C95] px-5 text-xs font-black text-white transition active:scale-[.98] sm:mt-5 sm:min-h-12 sm:rounded-xl sm:text-sm"><RefreshCw size={16} className="sm:size-[18px]" />Try Again</button></div> : reviews.length ? <div className="mt-5 space-y-4 sm:mt-6 sm:space-y-5">{reviews.map((review, index) => <article key={review.id ?? index} className="rounded-xl border-2 border-slate-200 p-4 sm:rounded-2xl sm:p-5"><div className="flex gap-1.5">{Array.from({ length: 5 }).map((_, star) => <GoogleStar key={star} active={star < reviewRating} size={16} />)}</div><p className="mt-3 whitespace-pre-line break-words text-xs font-semibold leading-5 sm:mt-4 sm:text-base sm:leading-7">{review.content}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#0A4C95] px-3 text-xs font-black text-white transition active:scale-[.98] sm:mt-5 sm:min-h-12 sm:rounded-xl sm:px-4 sm:text-base"><Clipboard size={16} className="sm:size-[18px]" />{t.copyReview}</button></article>)}</div> : <div className="mt-5 rounded-xl border border-dashed border-slate-300 p-5 text-center text-xs font-bold text-slate-500 sm:mt-6 sm:rounded-2xl sm:p-8 sm:text-sm">{t.empty}</div>}{!loading && <button type="button" onClick={() => goToStep(2)} className="mt-5 min-h-11 w-full rounded-xl border-2 border-slate-200 bg-white text-xs font-black text-slate-700 transition active:scale-[.98] sm:mt-6 sm:min-h-12 sm:text-sm">{t.back}</button>}</section>}
     </div>
     <BrandFooter />
 
