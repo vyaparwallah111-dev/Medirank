@@ -8,13 +8,19 @@ const headers={
 };
 const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers});
 const GEMINI_MODEL=Deno.env.get('GEMINI_MODEL')||'gemini-3.5-flash'; // Use env var, fallback to latest stable model
-// PER-ATTEMPT timeout. Measured baseline (before the prompt bloat that crept in across recent
-// changes): successful calls averaged ~3.3s. Production has since shown BOTH retry attempts
-// consistently hitting the old 8000ms SLA - a consistent (not intermittent) pattern, which points at
-// something structural rather than random network jitter. Lowered to 5000ms (~1.7s margin over the
-// 3.3s baseline) so total worst case (2 attempts + backoff + DB/overhead) lands near ~11-12s instead
-// of ~17s, and a stuck request surfaces the "try again" state to the patient much sooner.
-const GEMINI_TIMEOUT_MS=5_000;
+// ⚠️ TEMPORARY DIAGNOSTIC VALUE - REVERT AFTER STEP 2 TESTING ⚠️
+// Real production data showed BOTH attempts failing at ~5002ms/5006ms - i.e. right at the old
+// GEMINI_TIMEOUT_MS=5000 boundary. That means we were measuring the AbortController firing, not
+// Gemini's real completion time. Raised to 20000ms so a request can actually finish (or genuinely
+// fail) and we can see the real number.
+// The frontend's 20s AbortController (review-experience.tsx) was deliberately left untouched - live
+// patients keep their existing worst-case wait ceiling during this diagnostic window (this backend
+// change alone is safe/neutral for them: it just lets a slow-but-real Gemini call finish inside that
+// existing 20s budget instead of being killed early). For a genuinely unbounded read on attempt-2
+// completion time (i.e. total time can exceed 20s), test directly against the deployed function
+// (curl/Postman) rather than through the patient-facing UI - see diagnostic_test.sh.
+// Revert to a data-derived value (not another guess) once Step 2's real numbers come back.
+const GEMINI_TIMEOUT_MS=20_000;
 const TARGET_COUNT=3;
 
 type KB={area_name?:unknown;city_name?:unknown;top_services?:unknown};
@@ -408,12 +414,22 @@ Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "
     console.log('High Priority Keywords:',digest.high_priority_keywords);
     console.log('Rating:',rating,'Language:',language);
 
+    // TEST CANDIDATE, not asserted as the fix yet - confirmed via Google's own docs (ai.google.dev/
+    // gemini-api/docs/generate-content/thinking), not guessed: gemini-3.5-flash defaults to
+    // thinkingLevel "medium" when generationConfig.thinkingConfig is omitted (as it was, until now),
+    // and the Gemini 3 model family does NOT support fully disabling thinking. "low" is Google's own
+    // documented setting for minimizing latency/cost while keeping most quality. This is being tested
+    // in the SAME diagnostic round as the GEMINI_TIMEOUT_MS bump above (not applied silently as a
+    // separate guess) - the response's usageMetadata.thoughtsTokenCount, now logged below, will show
+    // directly whether thinking is still consuming meaningful tokens/time at this level, and the
+    // resulting real latency will confirm or rule out this mechanism from actual data.
     const geminiPayload={
       contents:[{parts:[{text:prompt}]}],
       generationConfig:{
         temperature:0.85,
         topP:0.95,
         topK:40,
+        thinkingConfig:{thinkingLevel:'low'},
         // Calculated, not guessed: longest realistic draft is ~7 sentences (~150 words / ~220 tokens
         // incl. JSON quoting/escaping overhead), x3 reviews = ~660 tokens, x2 safety margin = ~1320.
         // Previously this was a flat 4096 (before that, a buggy lengthBracket-derived formula that
@@ -431,6 +447,7 @@ Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "
     console.log('📤 Sending to Gemini prompt with keywords:',digest.high_priority_keywords);
     console.log('Prompt length:',prompt.length,'chars (~',approxPromptTokens,'tokens, chars/4 estimate)');
     console.log('maxOutputTokens sent:',geminiPayload.generationConfig.maxOutputTokens);
+    console.log('thinkingLevel sent:',geminiPayload.generationConfig.thinkingConfig.thinkingLevel);
 
     // STEP 1: one automatic, silent retry before giving up. Most Gemini failures (network blip,
     // momentary slowness, an occasional truncated/malformed response) are transient - a second
@@ -443,10 +460,15 @@ Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "
       const attemptStartMs=Date.now();
       // Structured per-attempt metrics - deliberately one JSON blob per line so it can be grepped
       // and pasted straight into a spreadsheet/table across multiple real requests in production.
-      const metrics:Record<string,unknown>={attempt,promptChars:prompt.length,approxPromptTokens,maxOutputTokens:geminiPayload.generationConfig.maxOutputTokens};
+      const metrics:Record<string,unknown>={attempt,promptChars:prompt.length,approxPromptTokens,maxOutputTokens:geminiPayload.generationConfig.maxOutputTokens,thinkingLevel:geminiPayload.generationConfig.thinkingConfig.thinkingLevel};
       try{
         const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},GEMINI_TIMEOUT_MS);
         metrics.latencyMs=Date.now()-attemptStartMs;
+        // Step 3 rate-limit check: surface any rate-limit-related headers Google returns, whether
+        // this attempt succeeded or failed. Only logged if actually present - never fabricated.
+        const rateLimitHeaders:Record<string,string>={};
+        response.headers.forEach((value,key)=>{if(/ratelimit|retry-after|quota/i.test(key))rateLimitHeaders[key]=value});
+        if(Object.keys(rateLimitHeaders).length)metrics.rateLimitHeaders=rateLimitHeaders;
         if(!response.ok){
           const errText=await response.text();
           lastFailureReason=`api_error_${response.status}`;
