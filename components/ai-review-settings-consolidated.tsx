@@ -39,9 +39,21 @@ const toneOptions: Array<{ value: Tone; label: string; description: string }> = 
   { value: 'conversational', label: 'Conversational', description: 'Natural, friendly chat style' },
 ];
 
-const toList = (value: unknown) => {
-  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string' && !!item.trim()).map((item) => item.trim());
-  if (typeof value === 'string') return value.split(',').map((item) => item.trim()).filter(Boolean);
+// Handles legacy double/triple-JSON-encoded values from the corrupted-data bug (a string value like
+// '["fear of pain"]' stored where a real array should be) by trying JSON.parse first, recursively,
+// before falling back to comma-splitting plain text. Without this, a corrupted value gets naively
+// comma-split into fragments still containing literal brackets/quotes, which then get saved back as
+// "new" data - compounding the corruption on every save/reload cycle instead of fixing it.
+const toList = (value: unknown, depth = 0): string[] => {
+  if (depth > 5) return [];
+  if (Array.isArray(value)) return value.flatMap((item) => typeof item === 'string' ? [item.trim()] : toList(item, depth + 1)).filter(Boolean);
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('[') || (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length > 1)) {
+      try { return toList(JSON.parse(trimmed), depth + 1); } catch { /* not valid JSON - fall through */ }
+    }
+    return trimmed.split(',').map((item) => item.trim()).filter(Boolean);
+  }
   return [];
 };
 

@@ -56,10 +56,22 @@ const sanitizeText=(value:unknown,maxLength:number)=>{
 const list=(value:unknown,maxLength=80)=>Array.isArray(value)?value.filter((item):item is string=>typeof item==='string'&&!!item.trim()).map(item=>sanitizeText(item,maxLength)).filter(Boolean):[];
 const unique=(items:string[],max=20)=>Array.from(new Set(items.map(item=>item.trim()).filter(Boolean))).slice(0,max);
 const normalize=(value:string)=>value.toLowerCase().replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim();
-const jsonList=(value:unknown):string[]=>{
-  if(Array.isArray(value))return list(value);
-  if(typeof value==='string')return value.split(',').map(item=>item.trim()).filter(Boolean);
-  if(value&&typeof value==='object')return Object.values(value as Record<string,unknown>).flatMap(jsonList);
+// Handles legacy double/triple-JSON-encoded values from the corrupted patient_concerns/usp_points
+// bug (a string like '["fear of pain"]' stored where a real jsonb array should be) by trying
+// JSON.parse first before falling back to comma-splitting plain text. Without this, a corrupted
+// value gets comma-split into fragments still containing literal brackets/quotes, which is exactly
+// the garbage that was going straight into the Gemini prompt for any doctor with a corrupted row.
+const jsonList=(value:unknown,depth=0):string[]=>{
+  if(depth>5)return [];
+  if(Array.isArray(value))return list(value.flatMap(item=>typeof item==='string'?[item]:jsonList(item,depth+1)));
+  if(typeof value==='string'){
+    const trimmed=value.trim();
+    if(trimmed.startsWith('[')||(trimmed.startsWith('"')&&trimmed.endsWith('"')&&trimmed.length>1)){
+      try{return jsonList(JSON.parse(trimmed),depth+1)}catch{/* not valid JSON - fall through */}
+    }
+    return trimmed.split(',').map(item=>item.trim()).filter(Boolean);
+  }
+  if(value&&typeof value==='object')return Object.values(value as Record<string,unknown>).flatMap(v=>jsonList(v,depth+1));
   return [];
 };
 function operationalWindow(now=new Date()){

@@ -23,9 +23,22 @@ type AISettingsInput={
   tone_preference:Tone;
 };
 
-const cleanList=(value:unknown,limit:number,maxLength:number)=>{
-  if(!Array.isArray(value))return [];
-  return value.map(item=>typeof item==='string'?item.trim():'').filter(Boolean).slice(0,limit).map(item=>item.slice(0,maxLength));
+// Defense in depth against the double-JSON-encoding bug: if a caller ever sends an already-
+// JSON-stringified string instead of a real array (e.g. a stale client build), parse it back into
+// an array here rather than silently dropping it (old behavior) or writing the raw string into the
+// jsonb column (the actual corruption mechanism - a string landing in a jsonb array column, then
+// re-escaped on every subsequent load/save round-trip). The frontend should always send real arrays;
+// this is a safety net, not the primary fix.
+const cleanList=(value:unknown,limit:number,maxLength:number,depth=0):string[]=>{
+  if(depth>5)return [];
+  if(Array.isArray(value))return value.flatMap(item=>typeof item==='string'?[item.trim()]:cleanList(item,limit,maxLength,depth+1)).filter(Boolean).slice(0,limit).map(item=>item.slice(0,maxLength));
+  if(typeof value==='string'){
+    const trimmed=value.trim();
+    if(trimmed.startsWith('[')||(trimmed.startsWith('"')&&trimmed.endsWith('"')&&trimmed.length>1)){
+      try{return cleanList(JSON.parse(trimmed),limit,maxLength,depth+1)}catch{/* not valid JSON - not a list, drop it */}
+    }
+  }
+  return [];
 };
 
 export async function updateAISettings(input:AISettingsInput){
