@@ -8,7 +8,10 @@ const headers={
 };
 const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers});
 const GEMINI_MODEL=Deno.env.get('GEMINI_MODEL')||'gemini-3.5-flash'; // Use env var, fallback to latest stable model
-const GEMINI_TIMEOUT_MS=9_000; // Increased from 6s to allow for retries
+// Frontend AbortController allows 20s total (review-experience.tsx). 9s here left Gemini almost no
+// room to finish a fuller, more natural response before being cut off mid-generation - raised to 15s
+// to use most of that budget while still leaving ~5s headroom for DB queries + response overhead.
+const GEMINI_TIMEOUT_MS=15_000;
 const TARGET_COUNT=3;
 
 type KB={area_name?:unknown;city_name?:unknown;top_services?:unknown};
@@ -501,11 +504,12 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
         temperature:0.85,
         topP:0.95,
         topK:40,
-        // FIXED: was derived from lengthBracket.max, which could be as low as 3 ('crisp' roll,
-        // 15% of high-rating requests) -> maxOutputTokens as low as 325, truncating Gemini's JSON
-        // mid-response and forcing parseReviews() to fail, silently falling back to emergencyDrafts().
-        // Fixed budget is generous enough for 3 JSON-wrapped reviews of up to ~7 sentences each.
-        maxOutputTokens:2500,
+        // Was derived from lengthBracket.max, which could be as low as 3 ('crisp' roll, 15% of
+        // high-rating requests) -> maxOutputTokens as low as 325, truncating Gemini's JSON
+        // mid-response and forcing parseReviews() to fail, silently falling back to emergencyDrafts()
+        // (the rigid hardcoded template). Raised well past what 3 natural reviews ever need, so a
+        // genuinely human-sounding response is never cut off mid-sentence for budget reasons.
+        maxOutputTokens:4096,
         responseMimeType:'application/json',
       },
     };
