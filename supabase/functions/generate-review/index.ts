@@ -261,67 +261,6 @@ function shapeLines(content:string,rating:number,language:Language,lengthBracket
   return lines.slice(0,shape.max).join('\n');
 }
 
-function injectDoctorName(content:string,doctorName:string,rating:number,language:Language,lengthBracket=selectLengthBracket(rating)){
-  if(!doctorName||normalize(content).includes(normalize(doctorName)))return shapeLines(content,rating,language,lengthBracket);
-  const lines=content.split(/\n+/).map(line=>line.trim()).filter(Boolean);
-  if(rating===1){
-    lines[0]=language==='hinglish'
-      ? `${doctorName} ke visit mein ${lines[0]||'experience expected se weak laga.'}`
-      : `${doctorName} was part of my visit, and ${lines[0]||'the experience felt below expectations.'}`;
-  }else if(rating===3){
-    lines[0]=language==='hinglish'
-      ? `${doctorName} ke saath visit neutral raha.`
-      : `My visit with ${doctorName} felt neutral.`;
-  }else if(rating>=4){
-    lines.splice(Math.min(2,lines.length),0,language==='hinglish'?`${doctorName} ne concerns calmly sune.`:`${doctorName} listened to my concerns calmly.`);
-  }else{
-    lines[0]=language==='hinglish'
-      ? `${doctorName} ke saath experience low-satisfaction raha.`
-      : `My experience with ${doctorName} felt low-satisfaction.`;
-  }
-  return shapeLines(lines.join('\n'),rating,language,lengthBracket);
-}
-
-function injectPatientContext(content:string,patientName:string,patientLocality:string,rating:number,language:Language,lengthBracket=selectLengthBracket(rating)){
-  const safeName=sanitizeText(patientName,60);
-  const safeLocality=sanitizeText(patientLocality,60);
-  if(!safeName&&!safeLocality)return shapeLines(content,rating,language,lengthBracket);
-  const hasName=!safeName||normalize(content).includes(normalize(safeName));
-  const hasLocality=!safeLocality||normalize(content).includes(normalize(safeLocality));
-  if(hasName&&hasLocality)return shapeLines(content,rating,language,lengthBracket);
-  const lines=content.split(/\n+/).map(line=>line.trim()).filter(Boolean);
-  const first=lines[0]||(
-    rating<=2
-      ? (language==='hinglish'?'experience expected se weak laga.':'the experience felt below expectations.')
-      : rating===3
-        ? (language==='hinglish'?'visit ka experience neutral raha.':'the visit felt neutral.')
-        : (language==='hinglish'?'clinic visit comfortable raha.':'the clinic visit felt comfortable.')
-  );
-  const identity=safeName&&safeLocality
-    ? (language==='hinglish'?`${safeName}, ${safeLocality} se`:`${safeName} from ${safeLocality}`)
-    : safeName
-      ? safeName
-      : (language==='hinglish'?`${safeLocality} se`:`from ${safeLocality}`);
-  const patternChoice=Math.floor(Math.random()*4);
-  if(patternChoice===0){
-    lines[0]=language==='hinglish'
-      ? `Main ${identity}, ${first.replace(/^main\s+/i,'')}`
-      : `I am ${identity}, and ${first.replace(/^I\s+/i,'')}`;
-  }else if(patternChoice===1&&lines.length>0){
-    const restOfContent=lines.slice(1).join('\n');
-    lines[0]=first;
-    lines.push(language==='hinglish'?`Main ${identity} hoon.`:`I'm ${identity}.`);
-    if(restOfContent)lines.push(restOfContent);
-  }else if(patternChoice===2&&safeName&&safeLocality){
-    lines[0]=language==='hinglish'
-      ? `${safeName} ko visit ke dauran ${first.replace(/^main\s+/i,'')}`
-      : `During my visit, ${first.replace(/^I\s+/i,'').replace(/^my\s+/i,'')}. I'm from ${safeLocality}.`;
-  }else{
-    lines[0]=first;
-    lines.splice(1,0,language==='hinglish'?`(Main ${identity} se hoon)`:`(I'm ${identity}.)`);
-  }
-  return shapeLines(lines.filter(Boolean).join('\n'),rating,language,lengthBracket);
-}
 
 async function checkDuplicateRisk(db:ReturnType<typeof createClient>,doctorId:string,newReviewOpeningLine:string){
   const recentResult=await db.from('generated_reviews').select('content').eq('doctor_id',doctorId).order('created_at',{ascending:false}).limit(20);
@@ -643,20 +582,11 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
       console.log('✅ All',reviews.length,'reviews from Gemini (no fallback needed)');
     }
 
-    // Post-processing (name/area injection, doctor name injection)
-    console.log('📝 Before post-processing:');
-    reviews.forEach((r,i)=>console.log(`Review ${i}: ${r.slice(0,100)}...`));
-
-    reviews=reviews.map(review=>{
-      let processed=review;
-      if(includeDoctorName&&!normalize(processed).includes(normalize(digest.doctor_name))){
-        processed=injectDoctorName(processed,digest.doctor_name,rating,language,lengthBracket);
-      }
-      if((digest.patient_name||digest.patient_locality)&&!normalize(processed).includes(normalize(digest.patient_name+' '+digest.patient_locality))){
-        processed=injectPatientContext(processed,digest.patient_name,digest.patient_locality,rating,language,lengthBracket);
-      }
-      return processed;
-    });
+    // NOTE: Post-processing DISABLED - New narrative-style prompt handles all injections
+    // (doctor name, patient name/area, keywords) naturally in Gemini's response
+    // Post-processing functions (injectDoctorName, injectPatientContext) were causing
+    // duplication by modifying content sequentially, each calling shapeLines()
+    // Now: Gemini generates complete, natural reviews - no post-processing needed
 
     console.log('\n🔍 FINAL OUTPUT COMPARISON:');
     console.log('='.repeat(60));
