@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Brain, HelpCircle, KeyRound, LayoutDashboard, LogOut, QrCode, Settings, UserRound } from "lucide-react";
+import { Brain, HelpCircle, KeyRound, LayoutDashboard, LogOut, QrCode, Settings, UserRound, Tag } from "lucide-react";
 import { Logo } from "./logo";
 import { createClient } from "@/lib/supabase/client";
 
@@ -10,6 +10,7 @@ const nav = [
   [LayoutDashboard, "Overview", "/dashboard"],
   [QrCode, "My QR Code", "/dashboard/qr-code"],
   [Brain, "AI Review Settings", "/dashboard/ai-review-settings"],
+  [Tag, "Review keywords", "/dashboard/keywords"],
   [Settings, "Clinic profile", "/dashboard/profile"],
   [HelpCircle, "Help & support", "/dashboard/support"],
 ] as const;
