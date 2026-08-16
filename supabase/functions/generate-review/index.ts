@@ -363,26 +363,17 @@ Deno.serve(async(req)=>{
     const selectedConcern=rating>=4&&digest.patient_concerns.length?randomItem(digest.patient_concerns):null;
     const selectedUSP=digest.usp_points.length?randomItem(digest.usp_points):null;
 
-    // Rating-aware, per-draft length/structure guidance - always a RANGE, never a fixed sentence count.
-    // Re-tightened after real output showed all 3 drafts landing long (6-7 sentences each) despite
-    // earlier ranges - d1/d2/d3 now step up CONCISE -> MODERATE -> DETAILED explicitly, with narrower,
-    // more separated word-count bands per step so the model can't default to the longest option for
-    // all three. Word counts are a safety net bounding length regardless of the token ceiling in effect.
-    const draftShape=rating>=4
-      ? {d1:'2-3 sentences (~30-50 words) - CONCISE, to the point',d2:'4-5 sentences (~65-95 words) - MODERATE detail, natural flow',d3:'5-7 sentences (~100-140 words) - DETAILED, one continuous account, no short choppy breaks'}
+    // Replaced a fixed 5-option framing menu + 3 rigid per-draft length brackets (short-term fix from
+    // the previous round). Both worked WITHIN a batch of 3, but at scale (hundreds of reviews per
+    // clinic) they'd converge on only 5 possible framings and 3 possible lengths - a detectable
+    // pattern of its own. Now: an open-ended framing instruction (model generates its own variation,
+    // not a pick-from-list) and a probabilistic length distribution (a target shape across MANY
+    // generations, not a rigid per-draft assignment) - see lengthDistribution and the prompt text below.
+    const lengthDistribution=rating>=4
+      ? '~30% land short (2-3 sentences), ~40% medium (4-6 sentences), ~30% longer (7-9 sentences)'
       : rating===3
-        ? {d1:'2 sentences (~20-35 words) - CONCISE',d2:'3-4 sentences (~40-60 words) - MODERATE',d3:'4-5 sentences (~60-85 words) - more DETAILED, still neutral in tone'}
-        : {d1:'2 sentences (~20-35 words) - CONCISE complaint',d2:'3-4 sentences (~35-55 words) - MODERATE detail',d3:'4-5 sentences (~55-80 words) - most DETAILED complaint, still direct'};
-
-    // Narrative framing menu (Issue 1 fix): without this, the model defaults to the same "accompanying
-    // a relative" premise across generations - itself a detectable pattern, the opposite of the goal.
-    const framingMenu=[
-      'the patient describing their own visit directly ("I visited...", "My appointment was...")',
-      'a first-time/walk-in visit ("First time at this clinic...", "Walked in without an appointment...")',
-      'a returning/repeat-patient visit ("Been coming here for...", "Not my first visit...")',
-      'accompanying a family member or relative (use at most ONCE across the 3 drafts - not the default)',
-      'an urgent/same-day visit ("Had sudden pain and needed to be seen quickly...")',
-    ];
+        ? '~30% land short (2 sentences), ~40% medium (3-4 sentences), ~30% longer (5-6 sentences)'
+        : '~30% land short (2 sentences), ~40% medium (3-4 sentences), ~30% longer (5 sentences)';
 
     // NOTE: Prompt was ~5100 chars (~1275 tokens) before this trim - roughly HALVED to ~2500 chars
     // (~625 tokens) while keeping every functional rule (anti-template, structure variation, keyword
@@ -414,15 +405,9 @@ ${selectedUSP?`- Reference "${selectedUSP}" once, folded in, not standalone.`:''
 
 ANTI-TEMPLATE RULE (most important): never write one sentence per requirement (opening feeling / keyword / patient context each on their own line) - that's a robotic checklist. In every draft, at least ONE sentence must combine 2+ required elements (e.g. a keyword with the patient's name/locality, two keywords together, or the doctor's name with a keyword).
 
-NARRATIVE FRAMING (pick a DIFFERENT one per draft - this is a menu to rotate through, never default to the same framing every time):
-${framingMenu.map((f,i)=>`${i+1}. ${f}`).join('\n')}
-At least 2 of the 3 drafts must use different framings from each other. Pick whichever fits the rating/keywords naturally - don't force a framing that doesn't fit.
+NATURAL VARIATION (open-ended, not a template): using the clinic/keyword/patient information above, write each review the way a real patient would naturally write it - vary your opening style, angle, and structure freely across the ${TARGET_COUNT} drafts. Do not follow a fixed pattern or reuse the same kind of opening line across drafts. Let the specific details provided (and only those details) shape what each review focuses on and how it opens - don't invent a backstory or framing that isn't supported by the given information.
 
-LENGTH ACROSS THE ${TARGET_COUNT} DRAFTS (must be VISIBLY different lengths - concise, then moderate, then detailed - not all similar):
-- Draft 1: ${draftShape.d1}.
-- Draft 2: ${draftShape.d2}.
-- Draft 3: ${draftShape.d3}.
-Stay inside each draft's word range - do not let every draft drift to the longest option.
+LENGTH: over many reviews generated across many patients, aim for roughly this natural spread: ${lengthDistribution}. Do not treat this as a rule for exactly these ${TARGET_COUNT} drafts - it's fine if two of them land in a similar range by chance. Just let length vary naturally with what each review needs to say; don't force artificial uniformity, and don't force artificial spread either.
 
 GOOD example (narrative, combined elements): "My visit went well, and the doctor explained things clearly while also addressing my concerns about the best dental implant procedure. The staff was polite throughout, which helped me feel comfortable as I learned about teeth whitening options."
 
@@ -443,7 +428,10 @@ Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "
     const geminiPayload={
       contents:[{parts:[{text:prompt}]}],
       generationConfig:{
-        temperature:0.85,
+        // Raised from 0.85 - the open-ended NATURAL VARIATION instruction (replacing the fixed
+        // framing menu/length brackets) relies on the model's own randomness to do more of the
+        // variation work across drafts and across separate generations, so it needs more room to vary.
+        temperature:0.95,
         topP:0.95,
         topK:40,
         thinkingConfig:{thinkingLevel:'low'},
