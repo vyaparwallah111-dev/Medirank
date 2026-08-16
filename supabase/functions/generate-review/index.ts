@@ -502,17 +502,21 @@ Deno.serve(async(req)=>{
     const selectedConcern=rating>=4&&digest.patient_concerns.length?randomItem(digest.patient_concerns):null;
     const selectedUSP=digest.usp_points.length?randomItem(digest.usp_points):null;
 
-    // Blocked phrases
+    // Blocked phrases - expanded to include generic filler chains
     const blockedPhrases=[
       'sharing genuine','overall good','highly satisfied','recently visited','my experience was',
       'I would definitely recommend','five-star','would rate','everything was perfect','best clinic',
       'without a doubt','The appointment felt organised from the start','The reception process was simple',
       'The doctor listened to my concerns carefully','The explanation was calm and clear',
       'The clinic environment felt clean','The staff response was polite','The visit did not feel rushed',
-      'I understood the next steps properly','Overall the experience felt comfortable','I felt satisfied with my visit'
+      'I understood the next steps properly','Overall the experience felt comfortable','I felt satisfied with my visit',
+      // Generic fillers that create checklist-like endings
+      'I had a positive experience','The treatment process ran smoothly','The consultation was meaningful',
+      'I felt comfortable and satisfied','The team was cooperative','The atmosphere was welcoming',
+      'I learned about the treatment plan','My confidence grew during the visit','The experience was memorable'
     ];
 
-    const prompt=`You are a Google review generator for a clinic. Generate exactly ${TARGET_COUNT} authentic patient reviews.
+    const prompt=`You are a Google review generator for a clinic. Generate exactly ${TARGET_COUNT} authentic patient reviews that READ LIKE REAL PATIENT STORIES, not checklists.
 
 CLINIC CONTEXT:
 - Doctor: ${digest.doctor_name}
@@ -522,33 +526,44 @@ CLINIC CONTEXT:
 
 RATING: ${rating} star${rating!==1?'s':''}
 LANGUAGE: ${digest.language==='hinglish'?'Hinglish (mix Hindi & English)':'English'}
-LENGTH: ${lengthBracket.min}-${lengthBracket.max} lines per review, target ${lengthBracket.target}
+LENGTH: ${rating>=4 ? '4-7 sentences (NOT more - a real review is concise)' : rating===3 ? '3-5 sentences' : '2-5 sentences'}
 STYLE: ${selectedArchetype}
 TONE: ${personalityVariant}
 CASING: ${casingProfile}
 
-KEYWORDS (MANDATORY - MUST appear 2+ times per review in different sentences):
-${digest.high_priority_keywords.map((kw,i)=>`- HIGH PRIORITY ${i+1}: "${kw}" (use in every review, naturally)`).join('\n')}
-${digest.selected_chips.length?digest.selected_chips.map((kw,i)=>`- SELECTED ${i+1}: "${kw}"`).join('\n'):''}
+KEYWORDS (MANDATORY):
+${digest.high_priority_keywords.map((kw,i)=>`${i+1}. "${kw}" - MUST appear 2-3 times, woven into existing sentences (NOT in standalone sentences)`).join('\n')}
 
-REQUIREMENTS:
-1. Each keyword marked HIGH PRIORITY must appear 2-3 times per review in different sentences
-2. Use selected keywords naturally in context
-3. ${digest.patient_name&&digest.patient_locality?`Naturally include exact name "${digest.patient_name}" and locality "${digest.patient_locality}" (use varied placements: opening, middle, or end - NOT always "I am X from Y")`:`Patient context: ${digest.patient_name?`include name "${digest.patient_name}"`:''}${digest.patient_locality?`include locality "${digest.patient_locality}"`:''}. Vary placement patterns.`}
-4. ${includeDoctorName?`Include doctor name "${digest.doctor_name}" naturally in ~50% of reviews, combined with a treatment keyword`:'Do not mention any doctor name'}
-5. ${selectedConcern?`Subtly address: "${selectedConcern}" (only for positive tone)`:''}
-6. ${selectedUSP?`Naturally mention: "${selectedUSP}" (once if relevant)`:''}
-7. Real patient voice - no robotic lists, natural flow, varying sentence lengths
-8. ${allowEmoji?'Allow max 1 contextual emoji per review (👍 🦷 ⭐)':"No emoji"}
-9. NEVER use these exact phrases: ${blockedPhrases.map(p=>`"${p}"`).join(', ')}
-10. Rating must match tone: ${rating===1?'honest complaints':''}${rating===2?'disappointed but fair':''}${rating===3?'neutral/mixed':''}${rating>=4?'positive & authentic':''}
+NARRATIVE STRUCTURE (CRITICAL - this is what makes reviews authentic):
+- Write like ONE connected story, NOT a checklist of facts
+- Use connector words (and, also, which, so, because, since) to link at least 3-4 sentence pairs
+- Every element (keywords, name, location, doctor name) must be PART OF a sentence that already has flow, not appended as its own standalone line
+- DO NOT place patient name/location in parentheses or brackets - introduce them naturally in opening/middle of first 2 sentences
+- DO NOT end with chains of generic short sentences (e.g., avoid patterns like: "The doctor was attentive. The process was smooth. The consultation was meaningful." one after another)
+- Each sentence must add NEW specific information, not restate the same satisfaction
+
+ACTUAL REQUIREMENTS:
+1. ${digest.high_priority_keywords.length ? `All high-priority keywords ("${digest.high_priority_keywords.join('", "')}") must appear 2-3 times EACH, naturally woven into the narrative` : ''}
+2. ${digest.patient_name&&digest.patient_locality ? `Weave BOTH name "${digest.patient_name}" AND location "${digest.patient_locality}" into the opening 1-2 sentences (examples: "As a ${digest.patient_name} from ${digest.patient_locality}, I visited...", or "I'm ${digest.patient_name}, and my visit from ${digest.patient_locality} to this clinic was...", or integrate them in different sentences with natural connectors)` : digest.patient_name ? `Include name "${digest.patient_name}" naturally in opening or middle` : digest.patient_locality ? `Include location "${digest.patient_locality}" naturally in opening or middle` : ''}
+3. ${includeDoctorName ? `Include doctor name "${digest.doctor_name}" naturally WITH a keyword (e.g., "Dr. ${digest.doctor_name} explained the ${digest.high_priority_keywords[0] || 'procedure'} thoroughly", or "Dr. ${digest.doctor_name}'s expertise with ${digest.high_priority_keywords[0] || 'treatment'} was clear")` : 'Do not mention doctor name'}
+4. ${selectedConcern ? `Subtly address "${selectedConcern}" (only if positive tone)` : ''}
+5. ${selectedUSP ? `Mention "${selectedUSP}" once if relevant (woven in, not standalone)` : ''}
+6. NEVER start with "I am X from Y" in parentheses - that's artificial. Weave it naturally into narrative.
+7. NEVER end with a chain of generic filler sentences - every closing sentence must tie back to a specific detail.
+8. FORBIDDEN PHRASES: ${blockedPhrases.map(p=>`"${p}"`).join(', ')}
+9. ${allowEmoji?'Max 1 emoji only, used contextually (👍 🦷 ⭐)':'No emoji'}
+10. Rating tone: ${rating===1?'honest, specific complaints (not just negative)':''}${rating===2?'mixed or disappointed, but fair':''}${rating===3?'balanced neutral':''}${rating>=4?'genuine positive with specific details (not just "satisfied")':''}
+
+TONE CHECK (to avoid checklist sound):
+BAD (checklist, disconnect): "My visit went well. The doctor explained things clearly. The staff was polite. The treatment was smooth. I felt comfortable."
+GOOD (narrative, flow): "My visit went well, and the doctor explained things clearly while also addressing my concerns about the best dental implant procedure. The staff was polite throughout, which helped me feel comfortable as I learned about teeth whitening options."
 
 OUTPUT FORMAT:
 Return exactly ${TARGET_COUNT} reviews as JSON:
 [
-  {"review": "review text here"},
-  {"review": "review text here"},
-  {"review": "review text here"}
+  {"review": "review text here - NARRATIVE STYLE, NOT CHECKLIST"},
+  {"review": "review text here - NARRATIVE STYLE, NOT CHECKLIST"},
+  {"review": "review text here - NARRATIVE STYLE, NOT CHECKLIST"}
 ]
 `;
 
