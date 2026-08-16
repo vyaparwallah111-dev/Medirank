@@ -7,7 +7,7 @@ const headers={
   'Access-Control-Allow-Methods':'POST, OPTIONS',
 };
 const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers});
-const GEMINI_MODEL='gemini-2.5-flash';
+const GEMINI_MODEL=Deno.env.get('GEMINI_MODEL')||'gemini-3.5-flash'; // Use env var, fallback to latest stable model
 const GEMINI_TIMEOUT_MS=9_000; // Increased from 6s to allow for retries
 const TARGET_COUNT=3;
 
