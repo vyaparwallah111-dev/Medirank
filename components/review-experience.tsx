@@ -10,7 +10,7 @@ type Language = "english" | "hinglish";
 type Theme = { primary?: string; accent?: string; background?: string };
 type Doctor = { id: string; doctor_name: string; clinic_name: string; specialization: string | null; gmb_review_link: string | null; logo_url?: string | null; theme_config?: Theme | null };
 type Location = { latitude: number; longitude: number };
-type RoutingState = { operationalScanSequence: number; allowLanguageStep: boolean; allowDetailForm: boolean };
+type RoutingState = { operationalScanSequence: number; allowLanguageStep: boolean };
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ThankYouAnimation = dynamic(() => import("./thank-you-animation"), { ssr: false });
@@ -25,17 +25,10 @@ const copy = {
   english: {
     chooseLanguage: "Choose your language",
     languageHint: "Select the language you feel most comfortable with.",
-    detailTitle: "Add visit details",
-    detailHint: "Name and locality are required before choosing highlights.",
-    name: "Name",
-    locality: "Locality",
-    namePlaceholder: "Your name",
-    localityPlaceholder: "Area or neighbourhood",
     chipsTitle: "Pick visit highlights",
     chipsHint: "These options are managed by the clinic.",
     minChips: "Select at least 2 highlights to continue.",
     ratingRequired: "Please select your star rating first.",
-    detailsRequired: "Please enter your name and locality to unlock visit highlights.",
     generating: "Writing your drafts...",
     generatingSlow: "Still working on it, almost there...",
     draftsTitle: "Choose your favorite draft",
@@ -50,17 +43,10 @@ const copy = {
   hinglish: {
     chooseLanguage: "Apni language chunein",
     languageHint: "Jis language mein aap comfortable hain, use select karein.",
-    detailTitle: "Visit details add karein",
-    detailHint: "Highlights choose karne se pehle name aur locality required hain.",
-    name: "Name",
-    locality: "Locality",
-    namePlaceholder: "Aapka name",
-    localityPlaceholder: "Area ya neighbourhood",
     chipsTitle: "Visit highlights chunein",
     chipsHint: "Ye options clinic dashboard se aate hain.",
     minChips: "Aage badhne ke liye kam se kam 2 highlights select karein.",
     ratingRequired: "Pehle apni star rating select karein.",
-    detailsRequired: "Visit highlights unlock karne ke liye name aur locality enter karein.",
     generating: "Aapke drafts ban rahe hain...",
     generatingSlow: "Thoda time lag raha hai, bas ho hi gaya...",
     draftsTitle: "Apna favorite draft chunein",
@@ -85,15 +71,6 @@ const sanitizeText = (value: string, maxLength: number) => value
   .replace(/\s+/g, " ")
   .trim()
   .slice(0, maxLength);
-const sanitizeLiveInput = (value: string, maxLength: number) => value
-  .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, " ")
-  .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, " ")
-  .replace(/<[^>]*>/g, " ")
-  .replace(/\bon\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, " ")
-  .replace(/\b(?:javascript|data|vbscript):/gi, " ")
-  .replace(/[<>{}`\\]/g, " ")
-  .replace(/[\u0000-\u001f\u007f]/g, " ")
-  .slice(0, maxLength);
 const titleCase = (value: string) => value.trim().split(/\s+/).map((part) => part ? `${part[0].toUpperCase()}${part.slice(1).toLowerCase()}` : "").join(" ");
 
 export function ReviewExperience({
@@ -116,14 +93,11 @@ export function ReviewExperience({
   const theme = { ...fallbackTheme, ...doctor.theme_config };
   const style = { "--patient-primary": theme.primary, "--patient-accent": theme.accent, "--patient-bg": theme.background } as CSSProperties;
   const allowLanguageStep = routingState?.allowLanguageStep ?? true;
-  const allowDetailForm = routingState?.allowDetailForm ?? true;
   const initialLanguage: Language | null = allowLanguageStep ? null : "english";
   const [currentLanguage, setCurrentLanguage] = useState<Language | null>(initialLanguage);
   const [keywordOptions, setKeywordOptions] = useState<string[]>(() => unique([...experienceKeywords, ...topServices]));
   const [selectedChips, setSelectedChips] = useState<string[]>([]);
   const [customNotes, setCustomNotes] = useState("");
-  const [patientName, setPatientName] = useState("");
-  const [patientLocality, setPatientLocality] = useState("");
   const [reviews, setReviews] = useState<string[]>([]);
   const [reviewRating, setReviewRating] = useState(5);
   const [selectedRating, setSelectedRating] = useState<number | null>(null);
@@ -221,14 +195,13 @@ export function ReviewExperience({
   }, [loading]);
 
   useEffect(() => {
-    const detailReady = !allowDetailForm || (sanitizeText(patientName, 60) && sanitizeText(patientLocality, 60));
-    if (!currentLanguage || loading || !selectedRating || !detailReady || selectedChips.length !== MIN_DETAIL_CHIPS) return;
+    if (!currentLanguage || loading || !selectedRating || selectedChips.length !== MIN_DETAIL_CHIPS) return;
     const generationKey = `${selectedChips.join("|")}:${selectedRating ?? "default"}`;
     if (autoGenerationKeyRef.current === generationKey) return;
     autoGenerationKeyRef.current = generationKey;
     scrollDraftsIntoView();
     void generate(selectedRating);
-  }, [allowDetailForm, currentLanguage, loading, patientLocality, patientName, selectedChips, selectedRating]);
+  }, [currentLanguage, loading, selectedChips, selectedRating]);
 
   function rememberScanId(nextScanId?: string) {
     if (!nextScanId) return;
@@ -250,7 +223,6 @@ export function ReviewExperience({
 
   function getStepperValidationMessage() {
     if (!selectedRating) return t.ratingRequired;
-    if (allowDetailForm && (!sanitizeText(patientName, 60) || !sanitizeText(patientLocality, 60))) return t.detailsRequired;
     return "";
   }
 
@@ -302,8 +274,6 @@ export function ReviewExperience({
           selected_chip: chips[0],
           rating: ratingOverride,
           custom_notes: sanitizeText(customNotes, 240) || null,
-          patient_name: allowDetailForm ? sanitizeText(patientName, 60) || null : null,
-          patient_locality: allowDetailForm ? sanitizeText(patientLocality, 60) || null : null,
           language: currentLanguage,
           device_token: token,
           ...(patientLocation || {}),
@@ -397,8 +367,7 @@ export function ReviewExperience({
       <section className="relative z-30 bg-white py-6 sm:py-8"><div className="text-center"><p className="text-xs font-black uppercase tracking-[.12em] text-[#0A4C95] sm:tracking-[.18em]">Tap your rating <span className="text-red-600">*</span></p><div className="mt-5 flex justify-center gap-2 sm:mt-6 sm:gap-3" role="radiogroup" aria-label="Select star rating" onMouseLeave={() => setHoverRating(null)}>{Array.from({ length: 5 }).map((_, index) => { const value = index + 1; const previewRating = hoverRating ?? selectedRating ?? 0; return <button key={value} type="button" role="radio" aria-checked={selectedRating === value} onMouseEnter={() => { if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) setHoverRating(value); }} onFocus={() => setHoverRating(value)} onBlur={() => setHoverRating(null)} onTouchStart={(event) => { event.preventDefault(); selectRating(value); }} onClick={() => selectRating(value)} className="group grid h-10 w-10 touch-manipulation place-items-center rounded-full transition-colors duration-75 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4285F4] active:bg-slate-200 sm:h-12 sm:w-12 sm:hover:bg-slate-100"><GoogleStar active={value <= previewRating} size={30} /></button>; })}</div><p className="mt-4 min-h-6 text-xs font-extrabold text-slate-700 sm:mt-5 sm:text-sm">{selectedRating ? selectedRating >= 5 ? "Loved it" : selectedRating === 4 ? "Good, with small feedback" : "Needs improvement" : "Select your rating"}</p></div></section>
 
       <section className="relative z-30 bg-white py-6 sm:py-8">
-        {allowDetailForm && <><h2 className="text-base font-black sm:text-xl">{t.detailTitle}</h2><p className="mt-2 text-xs font-semibold leading-4 text-slate-600 sm:mt-2.5 sm:text-sm sm:leading-5">{t.detailHint}</p><div className="mt-5 grid gap-3 sm:mt-6 sm:grid-cols-2 sm:gap-4"><div><label className="label text-xs sm:text-sm">{t.name}</label><input value={patientName} onChange={(event) => setPatientName(sanitizeLiveInput(event.target.value, 60))} className="input text-sm" placeholder={t.namePlaceholder} maxLength={60} /></div><div><label className="label text-xs sm:text-sm">{t.locality}</label><input value={patientLocality} onChange={(event) => setPatientLocality(sanitizeLiveInput(event.target.value, 60))} className="input text-sm" placeholder={t.localityPlaceholder} maxLength={60} /></div></div></>}
-        {detailsUnlocked ? <div className={allowDetailForm ? "mt-6" : ""}><div className="flex items-center justify-between gap-3 sm:gap-4"><div className="min-w-0"><h2 className="text-base font-black sm:text-xl">{t.chipsTitle}</h2><p className="mt-1 text-xs font-bold leading-4 text-slate-500 sm:mt-1.5 sm:leading-5">{allowDetailForm ? t.chipsHint : "Select at least 2 active dashboard keywords."}</p></div><span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-[#0A4C95] sm:px-3 sm:py-1.5">{selectedChips.length}/{MIN_DETAIL_CHIPS}</span></div><div className="mt-4 grid grid-cols-1 gap-2.5 min-[360px]:grid-cols-2 sm:mt-5 sm:gap-3">{chipOptions.map((value) => <button key={value} type="button" disabled={loading} aria-pressed={selectedChips.includes(value)} onClick={() => toggleChip(value)} className={`min-h-12 rounded-xl border-2 px-3 py-2.5 text-left text-xs font-black leading-4 transition active:scale-[.98] disabled:opacity-60 sm:min-h-14 sm:rounded-2xl sm:px-4 sm:py-3 sm:text-sm sm:leading-5 ${selectedChips.includes(value) ? "border-[#0A4C95] bg-blue-50 text-[#0A4C95] shadow-md" : "border-slate-200 bg-white text-slate-950 shadow-sm"}`}><span className="flex min-w-0 items-center gap-2 break-words">{selectedChips.includes(value) && <Check size={16} className="shrink-0 sm:size-[17px]" />}{value}</span></button>)}</div></div> : <p className="mt-5 rounded-xl bg-red-50 px-4 py-3 text-xs font-black text-red-700 sm:mt-6 sm:px-5 sm:py-3.5 sm:text-sm">{stepperWarning}</p>}
+        {detailsUnlocked ? <div><div className="flex items-center justify-between gap-3 sm:gap-4"><div className="min-w-0"><h2 className="text-base font-black sm:text-xl">{t.chipsTitle}</h2><p className="mt-1 text-xs font-bold leading-4 text-slate-500 sm:mt-1.5 sm:leading-5">{t.chipsHint}</p></div><span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-[#0A4C95] sm:px-3 sm:py-1.5">{selectedChips.length}/{MIN_DETAIL_CHIPS}</span></div><div className="mt-4 grid grid-cols-1 gap-2.5 min-[360px]:grid-cols-2 sm:mt-5 sm:gap-3">{chipOptions.map((value) => <button key={value} type="button" disabled={loading} aria-pressed={selectedChips.includes(value)} onClick={() => toggleChip(value)} className={`min-h-12 rounded-xl border-2 px-3 py-2.5 text-left text-xs font-black leading-4 transition active:scale-[.98] disabled:opacity-60 sm:min-h-14 sm:rounded-2xl sm:px-4 sm:py-3 sm:text-sm sm:leading-5 ${selectedChips.includes(value) ? "border-[#0A4C95] bg-blue-50 text-[#0A4C95] shadow-md" : "border-slate-200 bg-white text-slate-950 shadow-sm"}`}><span className="flex min-w-0 items-center gap-2 break-words">{selectedChips.includes(value) && <Check size={16} className="shrink-0 sm:size-[17px]" />}{value}</span></button>)}</div></div> : <p className="mt-5 rounded-xl bg-red-50 px-4 py-3 text-xs font-black text-red-700 sm:mt-6 sm:px-5 sm:py-3.5 sm:text-sm">{stepperWarning}</p>}
         {validationError && <p className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-xs font-black text-red-700 sm:mt-5 sm:px-5 sm:py-3.5 sm:text-sm">{validationError}</p>}
         {loading && <div className="mt-4 flex min-h-11 items-center justify-center gap-2 rounded-xl bg-blue-50 px-4 py-3 text-xs font-black text-[#0A4C95] sm:mt-5 sm:min-h-12 sm:text-sm"><Loader2 size={16} className="animate-spin sm:size-[18px]" />{loadingSlow ? t.generatingSlow : t.generating}</div>}
       </section>

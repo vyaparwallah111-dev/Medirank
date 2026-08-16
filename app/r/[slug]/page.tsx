@@ -67,7 +67,6 @@ export default async function PatientPage({params}:PageProps){
     const routingState={
       operationalScanSequence:0,
       allowLanguageStep:true,
-      allowDetailForm:true,
     };
     const treatmentKeywords=keywords.filter(item=>item.category==='treatment').map(item=>item.keyword).filter(Boolean);
     const topServices=Array.from(new Set<string>([...knowledgeBase.top_services,...treatmentKeywords]));

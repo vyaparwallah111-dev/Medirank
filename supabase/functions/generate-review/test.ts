@@ -86,19 +86,18 @@ function testTokenOptimization() {
   });
 }
 
-// Test 4: Deterministic Detail Form (always available)
-function testDeterministicDetailForm() {
+// Test 4: Deterministic Language Step (always available)
+function testDeterministicLanguageStep() {
   const mockRoutingState = {
     operationalScanSequence: 0,
     allowLanguageStep: true,
-    allowDetailForm: true,
   };
 
-  const passed = mockRoutingState.allowDetailForm === true && mockRoutingState.allowLanguageStep === true;
-  const details = "Form & language step always available (no random gates)";
+  const passed = mockRoutingState.allowLanguageStep === true;
+  const details = "Language step always available (no random gate). Patient name/locality collection was removed entirely (Gemini wrote third-person about the patient when a name was present), so there is no detail-form gate to test anymore.";
 
   results.push({
-    testCase: "4. Deterministic Detail Form (no random gates)",
+    testCase: "4. Deterministic Language Step (no random gates)",
     passed,
     details,
   });
@@ -224,7 +223,7 @@ function runAllTests() {
   testKeywordConsistency();
   testNoRepeatedOpenings();
   testTokenOptimization();
-  testDeterministicDetailForm();
+  testDeterministicLanguageStep();
   testDoctorKeywordCombos();
   testKeywordAwareFallback();
   testLanguageVariants();

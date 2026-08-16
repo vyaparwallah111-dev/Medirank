@@ -24,7 +24,7 @@ type ClientDigest={
   high_priority_keywords:string[];medium_keywords:string[];low_keywords:string[];
   selected_chips:string[];patient_concerns:string[];usp_points:string[];tone_preference:string;
   primary_area:string;secondary_area:string|null;
-  patient_name:string;patient_locality:string;custom_notes:string;rating:number;language:Language;
+  custom_notes:string;rating:number;language:Language;
 };
 const STRUCTURE_ARCHETYPES:Record<ArchetypeKey,string>={
   A:'Write as ONE flowing sentence, no formal breaks, casual run-on style. Conversational, like texting a friend.',
@@ -56,29 +56,6 @@ const sanitizeText=(value:unknown,maxLength:number)=>{
 const list=(value:unknown,maxLength=80)=>Array.isArray(value)?value.filter((item):item is string=>typeof item==='string'&&!!item.trim()).map(item=>sanitizeText(item,maxLength)).filter(Boolean):[];
 const unique=(items:string[],max=20)=>Array.from(new Set(items.map(item=>item.trim()).filter(Boolean))).slice(0,max);
 const normalize=(value:string)=>value.toLowerCase().replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim();
-const titleCaseHuman=(value:string)=>value.split(/\s+/).filter(Boolean).map(part=>`${part[0].toUpperCase()}${part.slice(1).toLowerCase()}`).join(' ');
-const splitKnownCompound=(value:string,terms:string[])=>{
-  const lower=value.toLowerCase();
-  for(const term of terms){
-    if(lower.length>term.length+2&&lower.endsWith(term)){
-      const prefix=lower.slice(0,-term.length);
-      return `${prefix} ${term}`;
-    }
-  }
-  return value;
-};
-const normalizeHumanInput=(value:unknown,maxLength:number,kind:'name'|'locality')=>{
-  const compact=sanitizeText(value,maxLength)
-    .replace(/[-_./]+/g,' ')
-    .replace(/([a-z])([A-Z])/g,'$1 $2')
-    .replace(/\s+/g,' ')
-    .trim();
-  if(!compact)return '';
-  const knownNameTerms=['jha','kumar','singh','yadav','gupta','sharma','verma','prasad','khan','ali','ahmed','ansari','raj','rani'];
-  const knownLocalityTerms=['sharif','nagar','pur','pura','ganj','bazar','bazaar','colony','road','chowk','market','vihar','bagh'];
-  const spaced=compact.includes(' ')?compact:splitKnownCompound(compact,kind==='name'?knownNameTerms:knownLocalityTerms);
-  return titleCaseHuman(spaced).slice(0,maxLength);
-};
 const jsonList=(value:unknown):string[]=>{
   if(Array.isArray(value))return list(value);
   if(typeof value==='string')return value.split(',').map(item=>item.trim()).filter(Boolean);
@@ -291,7 +268,6 @@ Deno.serve(async(req)=>{
           operationalWindowStart:operationalWindow().startIso,
           operationalWindowEnd:operationalWindow().endIso,
           allowLanguageStep:true,
-          allowDetailForm:Math.random()<0.40,
         }
       });
     }
@@ -322,9 +298,12 @@ Deno.serve(async(req)=>{
     const mergedKeywords=mergeKeywordsByPriority(priorityKeywords,unique(keywordRows.map(r=>sanitizeText(r.keyword,80)).filter(Boolean)));
 
     // User selections this session
+    // NOTE: patient_name/patient_locality intentionally not read from the request anymore. Gemini was
+    // writing reviews about the patient in THIRD PERSON when a name was present ("Avinash ko fear
+    // tha" / "he is the Best Doctor") instead of first person as the patient themselves - a confusing,
+    // unnatural voice, and inconsistent within a single review in at least one observed case. Rather
+    // than patch the prompt repeatedly, the feature (and its frontend collection step) was removed.
     const selectedChips=unique([...list(body.selected_chips,80),...list(body.selected_keywords,80),...list(body.selected_experiences,80),sanitizeText(body.selected_chip,80)].filter(Boolean),5);
-    const patientName=normalizeHumanInput(body.patient_name,60,'name');
-    const patientLocality=normalizeHumanInput(body.patient_locality,60,'locality');
     const customNotes=sanitizeText(body.custom_notes,240);
 
     // Build ClientDigest
@@ -344,8 +323,6 @@ Deno.serve(async(req)=>{
       tone_preference:sanitizeText(aiSettings?.tone_preference,40),
       primary_area:sanitizeText(body.primary_area,80)||sanitizeText(kb.area_name,80)||sanitizeText(doctor.city,80),
       secondary_area:(Math.random()<0.25&&aiSettings?.target_areas?.secondary)?sanitizeText(jsonList(aiSettings.target_areas.secondary)[0],80):null,
-      patient_name:patientName,
-      patient_locality:patientLocality,
       custom_notes:customNotes,
       rating,
       language,
@@ -384,6 +361,8 @@ Deno.serve(async(req)=>{
     // one contributing factor toward the production timeout investigation - see GEMINI_TIMEOUT_MS below.
     const prompt=`You are a Google review generator for a clinic. Generate exactly ${TARGET_COUNT} authentic patient reviews that read like real patient stories, not checklists.
 
+PERSPECTIVE (mandatory, read first): write entirely in FIRST PERSON, as if YOU are the patient sharing your own experience ("I visited", "my appointment", "I felt"). Never refer to "the patient" or any patient name in third person - you ARE the person who visited, not someone describing them. Doctor and clinic names are fine to mention directly by name (e.g. "Dr. Sharma explained clearly") - only the patient's own identity must never appear in third person.
+
 CLINIC: ${digest.doctor_name} at ${digest.clinic_name}, ${digest.primary_area}${digest.secondary_area?`/${digest.secondary_area}`:''} (${digest.specialization})
 RATING: ${rating} star${rating!==1?'s':''} | LANGUAGE: ${digest.language==='hinglish'?'Hinglish - see HINGLISH STYLE below':'English'} | STYLE: ${selectedArchetype}
 TONE: ${personalityVariant} | CASING: ${casingProfile}
@@ -393,19 +372,17 @@ HINGLISH STYLE (mandatory - read carefully, this is the most commonly gotten-wro
 KEYWORDS (weave naturally, 2-3 mentions each, never a standalone sentence): ${digest.high_priority_keywords.length?digest.high_priority_keywords.map(kw=>`"${kw}"`).join(', '):'none required'}
 
 REQUIREMENTS (blend into the narrative, don't turn into a list of sentences):
-${digest.patient_name&&digest.patient_locality?`- Name "${digest.patient_name}" and locality "${digest.patient_locality}" together in the opening 1-2 sentences, fused into a sentence with other content (never standalone, never in parentheses).`:digest.patient_name?`- Name "${digest.patient_name}" naturally, fused into a sentence with other content.`:digest.patient_locality?`- Locality "${digest.patient_locality}" naturally, fused into a sentence with other content.`:''}
 ${includeDoctorName?`- Doctor name "${digest.doctor_name}" fused into a sentence that also carries a keyword.`:'- No doctor name.'}
 ${selectedConcern?`- Subtly address "${selectedConcern}", folded in, not standalone.`:''}
 ${selectedUSP?`- Reference "${selectedUSP}" once, folded in, not standalone.`:''}
-- Never open with "I am X from Y" in parentheses.
 - Never close with a chain of short generic sentences - every closing sentence needs a specific detail.
 - Avoid generic templated phrases (e.g. "appointment felt organised", "staff was polite", "experience felt comfortable", "would definitely recommend", "highly satisfied") - describe specifics instead.
 - ${allowEmoji?'Max 1 contextual emoji (👍 🦷 ⭐).':'No emoji.'}
 - Tone: ${rating===1?'honest, specific complaints':rating===2?'mixed/disappointed but fair':rating===3?'balanced neutral':'genuine positive with specific details'}
 
-ANTI-TEMPLATE RULE (most important): never write one sentence per requirement (opening feeling / keyword / patient context each on their own line) - that's a robotic checklist. In every draft, at least ONE sentence must combine 2+ required elements (e.g. a keyword with the patient's name/locality, two keywords together, or the doctor's name with a keyword).
+ANTI-TEMPLATE RULE (most important): never write one sentence per requirement (opening feeling / keyword / concern each on their own line) - that's a robotic checklist. In every draft, at least ONE sentence must combine 2+ required elements (e.g. two keywords together, or the doctor's name with a keyword).
 
-NATURAL VARIATION (open-ended, not a template): using the clinic/keyword/patient information above, write each review the way a real patient would naturally write it - vary your opening style, angle, and structure freely across the ${TARGET_COUNT} drafts. Do not follow a fixed pattern or reuse the same kind of opening line across drafts. Let the specific details provided (and only those details) shape what each review focuses on and how it opens - don't invent a backstory or framing that isn't supported by the given information.
+NATURAL VARIATION (open-ended, not a template): using the clinic/keyword information above, write each review the way a real patient would naturally write it - vary your opening style, angle, and structure freely across the ${TARGET_COUNT} drafts. Do not follow a fixed pattern or reuse the same kind of opening line across drafts. Let the specific details provided (and only those details) shape what each review focuses on and how it opens - don't invent a backstory or framing that isn't supported by the given information.
 
 LENGTH: over many reviews generated across many patients, aim for roughly this natural spread: ${lengthDistribution}. Do not treat this as a rule for exactly these ${TARGET_COUNT} drafts - it's fine if two of them land in a similar range by chance. Just let length vary naturally with what each review needs to say; don't force artificial uniformity, and don't force artificial spread either.
 
@@ -608,7 +585,6 @@ Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "
       keywords_high:digest.high_priority_keywords,
       keywords_selected:digest.selected_chips,
       doctor_name_included:includeDoctorName,
-      patient_context_included:!!digest.patient_name||!!digest.patient_locality,
     };
 
     // Persist reviews
