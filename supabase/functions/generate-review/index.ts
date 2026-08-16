@@ -250,22 +250,15 @@ function ratingLayout(rating:number,language:Language,serviceKeyword:string,doct
 }
 
 function shapeLines(content:string,rating:number,language:Language,lengthBracket=selectLengthBracket(rating)){
+  // NOTE: Removed hardcoded filler padding that was destroying variation
+  // Gemini now handles length entirely - no post-processing padding
+  // This ensures all sentences come from Gemini, every review is unique
   const shape=lengthBracket;
   const base=content.replace(/\r/g,'\n').split(/\n+/).map(line=>line.trim()).filter(Boolean);
   const sentenceLines=content.split(/(?<=[.!?])\s+/).map(line=>line.trim()).filter(Boolean);
   const lines=(base.length>1?base:sentenceLines).filter(Boolean);
-  const fillers=rating<=2
-    ? (language==='hinglish'
-      ? ['Experience expected se weak laga.','Process better ho sakta tha.','Main bas honest feedback share kar raha hoon.','Improvement ki zarurat feel hui.']
-      : ['The experience felt below expectations.','The process could be handled better.','I am sharing this as honest feedback.','There is room for improvement.'])
-    : rating===3
-      ? (language==='hinglish'?['Kuch parts theek the.','Kuch areas better ho sakte hain.','Overall experience neutral raha.']:['Some parts were fine.','A few areas could be better.','Overall, it felt neutral.'])
-      : (language==='hinglish'
-        ? ['Clinic visit ka experience achcha raha.','Mujhe positive vibes mila.','Doctor ke paas time tha mere liye.','Treatment process smooth tha.','Consultation meaningful thi.','Team cooperative tha.','Clinic atmosphere welcoming tha.','Pata chal gaya ki treatment kaise hoga.','Mera confidence badhta gaya.','Experience memorable raha.']
-        : ['The clinic visit was worthwhile.','I had a positive experience.','The doctor was attentive to my needs.','The treatment process ran smoothly.','The consultation was meaningful.','The team was cooperative.','The atmosphere was welcoming.','I learned about the treatment plan.','My confidence grew during the visit.','The experience was memorable.']);
-  const next=[...lines];
-  for(const filler of fillers){if(next.length>=shape.target)break;if(!next.some(line=>normalize(line)===normalize(filler)))next.push(filler)}
-  return next.slice(0,shape.max).join('\n');
+  // Just return the lines as-is, no padding - let Gemini control length
+  return lines.slice(0,shape.max).join('\n');
 }
 
 function injectDoctorName(content:string,doctorName:string,rating:number,language:Language,lengthBracket=selectLengthBracket(rating)){
@@ -612,10 +605,12 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
     }
 
     const modelText=parts.map((p:any)=>typeof p.text==='string'?p.text:'').filter(Boolean).join('\n');
-    console.log('📥 RAW GEMINI RESPONSE (first 500 chars):\n',modelText.slice(0,500));
+    console.log('📥 RAW GEMINI RESPONSE (BEFORE ANY POST-PROCESSING):\n',modelText);
 
     let reviews=parseReviews(modelText,TARGET_COUNT);
     console.log('✅ PARSED',reviews.length,'reviews from Gemini');
+    console.log('📋 PARSED REVIEWS (raw, no post-processing yet):');
+    reviews.forEach((r,i)=>console.log(`\n=== Review ${i+1} ===\n${r}`));
 
     // Lightweight duplicate check - only check first line
     if(reviews.length===TARGET_COUNT){
@@ -663,17 +658,19 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
       return processed;
     });
 
-    console.log('📋 FINAL OUTPUT - 3 reviews being returned:');
+    console.log('\n🔍 FINAL OUTPUT COMPARISON:');
+    console.log('='.repeat(60));
     reviews.forEach((r,i)=>{
-      console.log(`\n=== REVIEW ${i+1} ===`);
+      console.log(`\n### FINAL REVIEW ${i+1} (after all post-processing):`);
       console.log(r);
-      console.log('---');
-      console.log('Contains high-priority keywords:');
+      console.log('\nKeyword check:');
       digest.high_priority_keywords.forEach(kw=>{
         const count=(r.match(new RegExp(kw,'gi'))||[]).length;
         console.log(`  "${kw}": ${count} times`);
       });
     });
+    console.log('\n='.repeat(60));
+    console.log('⚠️  If all 3 reviews end with IDENTICAL lines, shapeLines() padding is still active!');
 
     // Save metadata
     const metadata={
