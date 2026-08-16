@@ -363,16 +363,26 @@ Deno.serve(async(req)=>{
     const selectedConcern=rating>=4&&digest.patient_concerns.length?randomItem(digest.patient_concerns):null;
     const selectedUSP=digest.usp_points.length?randomItem(digest.usp_points):null;
 
-    // Rating-aware, per-draft length/structure guidance - always a RANGE, never a fixed sentence count,
-    // and each of the 3 drafts gets a DIFFERENT shape so they can't collapse into the same skeleton.
-    // Word-count ranges added alongside sentence counts as a safety net (Step 2 of the truncation
-    // fix): bounds length more precisely so reviews stay naturally-flowing but don't balloon
-    // unpredictably long, protecting against hitting maxOutputTokens regardless of its exact value.
+    // Rating-aware, per-draft length/structure guidance - always a RANGE, never a fixed sentence count.
+    // Re-tightened after real output showed all 3 drafts landing long (6-7 sentences each) despite
+    // earlier ranges - d1/d2/d3 now step up CONCISE -> MODERATE -> DETAILED explicitly, with narrower,
+    // more separated word-count bands per step so the model can't default to the longest option for
+    // all three. Word counts are a safety net bounding length regardless of the token ceiling in effect.
     const draftShape=rating>=4
-      ? {d1:'3-4 sentences (~45-70 words), flowing narrative with connectors',d2:'a single longer paragraph of 5-7 sentences (~80-120 words), one continuous account, no short choppy breaks',d3:'3-5 sentences (~50-85 words) opening with one specific concrete detail (not a generic feeling statement)'}
+      ? {d1:'2-3 sentences (~30-50 words) - CONCISE, to the point',d2:'4-5 sentences (~65-95 words) - MODERATE detail, natural flow',d3:'5-7 sentences (~100-140 words) - DETAILED, one continuous account, no short choppy breaks'}
       : rating===3
-        ? {d1:'2-3 sentences (~30-50 words), plain and neutral',d2:'3-4 sentences (~45-70 words) as one continuous paragraph',d3:'2-4 sentences (~35-60 words) opening with a specific detail'}
-        : {d1:'2-3 short, blunt sentences (~25-45 words)',d2:'3-4 sentences (~40-65 words) as one continuous complaint, not fragmented',d3:'1-3 direct sentences (~20-45 words) opening with the specific problem'};
+        ? {d1:'2 sentences (~20-35 words) - CONCISE',d2:'3-4 sentences (~40-60 words) - MODERATE',d3:'4-5 sentences (~60-85 words) - more DETAILED, still neutral in tone'}
+        : {d1:'2 sentences (~20-35 words) - CONCISE complaint',d2:'3-4 sentences (~35-55 words) - MODERATE detail',d3:'4-5 sentences (~55-80 words) - most DETAILED complaint, still direct'};
+
+    // Narrative framing menu (Issue 1 fix): without this, the model defaults to the same "accompanying
+    // a relative" premise across generations - itself a detectable pattern, the opposite of the goal.
+    const framingMenu=[
+      'the patient describing their own visit directly ("I visited...", "My appointment was...")',
+      'a first-time/walk-in visit ("First time at this clinic...", "Walked in without an appointment...")',
+      'a returning/repeat-patient visit ("Been coming here for...", "Not my first visit...")',
+      'accompanying a family member or relative (use at most ONCE across the 3 drafts - not the default)',
+      'an urgent/same-day visit ("Had sudden pain and needed to be seen quickly...")',
+    ];
 
     // NOTE: Prompt was ~5100 chars (~1275 tokens) before this trim - roughly HALVED to ~2500 chars
     // (~625 tokens) while keeping every functional rule (anti-template, structure variation, keyword
@@ -384,9 +394,11 @@ Deno.serve(async(req)=>{
     const prompt=`You are a Google review generator for a clinic. Generate exactly ${TARGET_COUNT} authentic patient reviews that read like real patient stories, not checklists.
 
 CLINIC: ${digest.doctor_name} at ${digest.clinic_name}, ${digest.primary_area}${digest.secondary_area?`/${digest.secondary_area}`:''} (${digest.specialization})
-RATING: ${rating} star${rating!==1?'s':''} | LANGUAGE: ${digest.language==='hinglish'?'Hinglish (mix Hindi & English)':'English'} | STYLE: ${selectedArchetype}
+RATING: ${rating} star${rating!==1?'s':''} | LANGUAGE: ${digest.language==='hinglish'?'Hinglish - see HINGLISH STYLE below':'English'} | STYLE: ${selectedArchetype}
 TONE: ${personalityVariant} | CASING: ${casingProfile}
-
+${digest.language==='hinglish'?`
+HINGLISH STYLE (mandatory - read carefully, this is the most commonly gotten-wrong instruction): write genuine Hinglish the way Indian patients actually text online - mix Hindi and English NATURALLY at the sentence and phrase level THROUGHOUT the whole review, not just 1-2 decorative Hindi words dropped into otherwise-English sentences. Roughly half the sentences/clauses should be Hindi-led, half English-led, naturally alternating. BAD (fake Hinglish, English with token Hindi words): "Crowd dekh kar I had prepared myself for a long wait." GOOD (real code-switching, full clauses mixed): "Waqt pe appointment mil gaya, and the doctor bhi bahut patiently sun rahe the meri problem." Keep this density throughout the review, not just the opening line.
+`:''}
 KEYWORDS (weave naturally, 2-3 mentions each, never a standalone sentence): ${digest.high_priority_keywords.length?digest.high_priority_keywords.map(kw=>`"${kw}"`).join(', '):'none required'}
 
 REQUIREMENTS (blend into the narrative, don't turn into a list of sentences):
@@ -402,10 +414,15 @@ ${selectedUSP?`- Reference "${selectedUSP}" once, folded in, not standalone.`:''
 
 ANTI-TEMPLATE RULE (most important): never write one sentence per requirement (opening feeling / keyword / patient context each on their own line) - that's a robotic checklist. In every draft, at least ONE sentence must combine 2+ required elements (e.g. a keyword with the patient's name/locality, two keywords together, or the doctor's name with a keyword).
 
-STRUCTURE ACROSS THE ${TARGET_COUNT} DRAFTS (vary structure, not just wording, so they don't share one skeleton):
+NARRATIVE FRAMING (pick a DIFFERENT one per draft - this is a menu to rotate through, never default to the same framing every time):
+${framingMenu.map((f,i)=>`${i+1}. ${f}`).join('\n')}
+At least 2 of the 3 drafts must use different framings from each other. Pick whichever fits the rating/keywords naturally - don't force a framing that doesn't fit.
+
+LENGTH ACROSS THE ${TARGET_COUNT} DRAFTS (must be VISIBLY different lengths - concise, then moderate, then detailed - not all similar):
 - Draft 1: ${draftShape.d1}.
 - Draft 2: ${draftShape.d2}.
 - Draft 3: ${draftShape.d3}.
+Stay inside each draft's word range - do not let every draft drift to the longest option.
 
 GOOD example (narrative, combined elements): "My visit went well, and the doctor explained things clearly while also addressing my concerns about the best dental implant procedure. The staff was polite throughout, which helped me feel comfortable as I learned about teeth whitening options."
 
