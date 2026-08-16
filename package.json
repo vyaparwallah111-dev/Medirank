@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node --max-old-space-size=4096 node_modules/next/dist/bin/next dev",
     "build": "next build",
     "postbuild": "node scripts/prepare-standalone.mjs",
     "start": "node --v8-pool-size=1 .next/standalone/server.js",
