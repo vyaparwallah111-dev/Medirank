@@ -8,19 +8,12 @@ const headers={
 };
 const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers});
 const GEMINI_MODEL=Deno.env.get('GEMINI_MODEL')||'gemini-3.5-flash'; // Use env var, fallback to latest stable model
-// ⚠️ TEMPORARY DIAGNOSTIC VALUE - REVERT AFTER STEP 2 TESTING ⚠️
-// Real production data showed BOTH attempts failing at ~5002ms/5006ms - i.e. right at the old
-// GEMINI_TIMEOUT_MS=5000 boundary. That means we were measuring the AbortController firing, not
-// Gemini's real completion time. Raised to 20000ms so a request can actually finish (or genuinely
-// fail) and we can see the real number.
-// The frontend's 20s AbortController (review-experience.tsx) was deliberately left untouched - live
-// patients keep their existing worst-case wait ceiling during this diagnostic window (this backend
-// change alone is safe/neutral for them: it just lets a slow-but-real Gemini call finish inside that
-// existing 20s budget instead of being killed early). For a genuinely unbounded read on attempt-2
-// completion time (i.e. total time can exceed 20s), test directly against the deployed function
-// (curl/Postman) rather than through the patient-facing UI - see diagnostic_test.sh.
-// Revert to a data-derived value (not another guess) once Step 2's real numbers come back.
-const GEMINI_TIMEOUT_MS=20_000;
+// Real measured data point: thinkingLevel:'low' + successful generation completed in 6868ms.
+// Set to that baseline + ~5s margin (~1.75x), not a re-guess - still a single sample, so this may
+// need to come down further (or up, if variance shows) once a few more real ATTEMPT_METRICS points
+// come in, but 12s is a much better-grounded value than the previous 5000ms (calibrated off a
+// different single sample from BEFORE thinkingLevel was set) or the 20000ms diagnostic ceiling.
+const GEMINI_TIMEOUT_MS=12_000;
 const TARGET_COUNT=3;
 
 type KB={area_name?:unknown;city_name?:unknown;top_services?:unknown};
@@ -205,8 +198,9 @@ async function fetchWithSla(url:string,init:RequestInit,timeoutMs:number){
   }finally{if(timer)clearTimeout(timer)}
 }
 
-function parseReviews(raw:unknown,expectedCount:number){
-  if(typeof raw!=='string')return [];
+type ParseReviewsResult={reviews:string[];failureReason?:'truncated_json'|'malformed_json'|'wrong_review_count'};
+function parseReviews(raw:unknown,expectedCount:number):ParseReviewsResult{
+  if(typeof raw!=='string')return {reviews:[],failureReason:'malformed_json'};
   const candidate=raw.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
   try{
     const parsed=JSON.parse(candidate) as unknown;
@@ -215,16 +209,23 @@ function parseReviews(raw:unknown,expectedCount:number){
       : parsed&&typeof parsed==='object'&&Array.isArray((parsed as {reviews?:unknown}).reviews)
         ? (parsed as {reviews:unknown[]}).reviews
         : [];
-    if(!collection.length)return [];
+    if(!collection.length)return {reviews:[],failureReason:'malformed_json'};
     const reviews=collection.map(item=>{
       if(!item||typeof item!=='object'||Array.isArray(item))return '';
       return sanitizeText((item as {review?:unknown}).review,1600);
     });
-    if(reviews.length!==expectedCount||reviews.some(review=>review.length<10))return [];
-    return unique(reviews,expectedCount);
+    if(reviews.length!==expectedCount||reviews.some(review=>review.length<10))return {reviews:[],failureReason:'wrong_review_count'};
+    return {reviews:unique(reviews,expectedCount)};
   }catch(error){
-    console.error('Strict Gemini JSON contract validation failed',error instanceof Error?error.message:String(error));
-    return [];
+    const message=error instanceof Error?error.message:String(error);
+    console.error('Strict Gemini JSON contract validation failed',message);
+    // "Unterminated string" / "Unexpected end of JSON input" are JSON.parse's own error text for
+    // content that stops mid-token - i.e. the response was cut off before completion (most likely:
+    // maxOutputTokens ran out, since thinking+output share that same budget on Gemini 3 models).
+    // Any other SyntaxError (e.g. unexpected token) means the JSON that WAS received is genuinely
+    // malformed, not just incomplete - a different failure mode worth telling apart in the logs.
+    const failureReason=/unterminated string|unexpected end of json input/i.test(message)?'truncated_json':'malformed_json';
+    return {reviews:[],failureReason};
   }
 }
 
@@ -363,12 +364,15 @@ Deno.serve(async(req)=>{
     const selectedUSP=digest.usp_points.length?randomItem(digest.usp_points):null;
 
     // Rating-aware, per-draft length/structure guidance - always a RANGE, never a fixed sentence count,
-    // and each of the 3 drafts gets a DIFFERENT shape so they can't collapse into the same skeleton
+    // and each of the 3 drafts gets a DIFFERENT shape so they can't collapse into the same skeleton.
+    // Word-count ranges added alongside sentence counts as a safety net (Step 2 of the truncation
+    // fix): bounds length more precisely so reviews stay naturally-flowing but don't balloon
+    // unpredictably long, protecting against hitting maxOutputTokens regardless of its exact value.
     const draftShape=rating>=4
-      ? {d1:'3-4 sentences, flowing narrative with connectors',d2:'a single longer paragraph of 5-7 sentences, one continuous account, no short choppy breaks',d3:'3-5 sentences opening with one specific concrete detail (not a generic feeling statement)'}
+      ? {d1:'3-4 sentences (~45-70 words), flowing narrative with connectors',d2:'a single longer paragraph of 5-7 sentences (~80-120 words), one continuous account, no short choppy breaks',d3:'3-5 sentences (~50-85 words) opening with one specific concrete detail (not a generic feeling statement)'}
       : rating===3
-        ? {d1:'2-3 sentences, plain and neutral',d2:'3-4 sentences as one continuous paragraph',d3:'2-4 sentences opening with a specific detail'}
-        : {d1:'2-3 short, blunt sentences',d2:'3-4 sentences as one continuous complaint, not fragmented',d3:'1-3 direct sentences opening with the specific problem'};
+        ? {d1:'2-3 sentences (~30-50 words), plain and neutral',d2:'3-4 sentences (~45-70 words) as one continuous paragraph',d3:'2-4 sentences (~35-60 words) opening with a specific detail'}
+        : {d1:'2-3 short, blunt sentences (~25-45 words)',d2:'3-4 sentences (~40-65 words) as one continuous complaint, not fragmented',d3:'1-3 direct sentences (~20-45 words) opening with the specific problem'};
 
     // NOTE: Prompt was ~5100 chars (~1275 tokens) before this trim - roughly HALVED to ~2500 chars
     // (~625 tokens) while keeping every functional rule (anti-template, structure variation, keyword
@@ -414,15 +418,11 @@ Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "
     console.log('High Priority Keywords:',digest.high_priority_keywords);
     console.log('Rating:',rating,'Language:',language);
 
-    // TEST CANDIDATE, not asserted as the fix yet - confirmed via Google's own docs (ai.google.dev/
-    // gemini-api/docs/generate-content/thinking), not guessed: gemini-3.5-flash defaults to
-    // thinkingLevel "medium" when generationConfig.thinkingConfig is omitted (as it was, until now),
-    // and the Gemini 3 model family does NOT support fully disabling thinking. "low" is Google's own
-    // documented setting for minimizing latency/cost while keeping most quality. This is being tested
-    // in the SAME diagnostic round as the GEMINI_TIMEOUT_MS bump above (not applied silently as a
-    // separate guess) - the response's usageMetadata.thoughtsTokenCount, now logged below, will show
-    // directly whether thinking is still consuming meaningful tokens/time at this level, and the
-    // resulting real latency will confirm or rule out this mechanism from actual data.
+    // CONFIRMED by real data: thinkingLevel:'low' brought latency down to 6868ms (was timing out at
+    // 20000ms+ with the default "medium" thinking level). Google's own docs (ai.google.dev/gemini-api/
+    // docs/generate-content/thinking) confirm gemini-3.5-flash defaults to "medium" thinking when
+    // thinkingConfig is omitted, and the Gemini 3 family cannot fully disable thinking - "low" is
+    // Google's documented setting for minimizing latency/cost while keeping most quality.
     const geminiPayload={
       contents:[{parts:[{text:prompt}]}],
       generationConfig:{
@@ -430,15 +430,21 @@ Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "
         topP:0.95,
         topK:40,
         thinkingConfig:{thinkingLevel:'low'},
-        // Calculated, not guessed: longest realistic draft is ~7 sentences (~150 words / ~220 tokens
-        // incl. JSON quoting/escaping overhead), x3 reviews = ~660 tokens, x2 safety margin = ~1320.
-        // Previously this was a flat 4096 (before that, a buggy lengthBracket-derived formula that
-        // sometimes computed as low as 325 and truncated responses). 4096 was never wrong for
-        // correctness, but an oversized ceiling is one of the few levers available without live
-        // profiling that can plausibly affect how long a "thinking"-capable model spends before
-        // emitting output - lowering it costs nothing (still 2x+ headroom over real need) and is a
-        // safe hedge while the real latency cause is confirmed from production logs (see below).
-        maxOutputTokens:1536,
+        // maxOutputTokens is a COMBINED budget for thinking + visible output on Gemini 3 models -
+        // confirmed via multiple independent real-world reports (e.g. googleapis/python-genai#2062,
+        // "max_output_tokens caps thinking + output tokens combined"), not assumed. This is WHY 1536
+        // truncated: thinking tokens (even at 'low', which still uses some - full thinking-off isn't
+        // supported) were consumed FIRST, leaving too little of the 1536 budget for the actual JSON.
+        // The truncation itself is real, measured evidence: "Unterminated string in JSON at position
+        // 1035" while mid-review, on a request that otherwise produced good narrative content.
+        // Sized for thinking + output combined: reserving ~2000 tokens for 'low'-level thinking on a
+        // multi-constraint prompt (anti-template rule + 3 distinct structural shapes + keyword
+        // weaving is a real constraint-satisfaction problem, not a trivial one) + ~1200 for the actual
+        // 3-review JSON output (longest draft ~7 sentences/~150 words/~220 tokens incl. JSON escaping
+        // overhead, x3 reviews, +overhead) = ~3200, rounded up to 4096 for margin. A bigger ceiling
+        // does NOT cost latency - confirmed by this same test round, where actual response time is
+        // governed by thinkingLevel, not by how large maxOutputTokens is set.
+        maxOutputTokens:4096,
         responseMimeType:'application/json',
       },
     };
@@ -494,17 +500,26 @@ Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "
             metrics.outcome='invalid_response_structure';
             console.error(`❌ Attempt ${attempt}/${MAX_ATTEMPTS} failed - INVALID RESPONSE STRUCTURE`,{parts});
           }else{
-            const modelText=parts.map((p:any)=>typeof p.text==='string'?p.text:'').filter(Boolean).join('\n');
+            // Defensive hardening: parts are contiguous chunks of ONE text stream, not separate
+            // lines - joining with '\n' risks inserting a stray newline mid-string if Gemini ever
+            // splits the answer across multiple parts (confirmed via docs this response does NOT
+            // include separate `thought` parts by default, so this wasn't the truncation cause here,
+            // but '' is the structurally correct join regardless).
+            const modelText=parts.map((p:any)=>typeof p.text==='string'?p.text:'').filter(Boolean).join('');
             console.log(`📥 Attempt ${attempt}/${MAX_ATTEMPTS} RAW GEMINI RESPONSE:\n`,modelText);
             const parsed=parseReviews(modelText,TARGET_COUNT);
-            if(parsed.length===TARGET_COUNT){
-              reviews=parsed;
+            if(parsed.reviews.length===TARGET_COUNT){
+              reviews=parsed.reviews;
               metrics.outcome='success';
-              console.log(`✅ Attempt ${attempt}/${MAX_ATTEMPTS} succeeded - parsed ${parsed.length} reviews`);
+              console.log(`✅ Attempt ${attempt}/${MAX_ATTEMPTS} succeeded - parsed ${parsed.reviews.length} reviews`);
             }else{
-              lastFailureReason='parse_failed_or_truncated';
-              metrics.outcome='parse_failed_or_truncated';
-              console.error(`❌ Attempt ${attempt}/${MAX_ATTEMPTS} failed - parsed ${parsed.length}/${TARGET_COUNT} reviews (malformed or truncated JSON)`);
+              // Distinct outcome per failure shape (Step 3 ask) - 'truncated_json' specifically means
+              // maxOutputTokens ran out mid-response (thinking + output share that budget on Gemini 3),
+              // separate from 'malformed_json' (genuinely broken JSON) and 'wrong_review_count'
+              // (valid JSON, but not exactly 3 usable reviews) - each points at a different fix.
+              lastFailureReason=parsed.failureReason||'wrong_review_count';
+              metrics.outcome=lastFailureReason;
+              console.error(`❌ Attempt ${attempt}/${MAX_ATTEMPTS} failed - ${lastFailureReason} (parsed ${parsed.reviews.length}/${TARGET_COUNT} reviews)`);
             }
           }
         }
