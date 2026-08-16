@@ -228,27 +228,6 @@ function parseReviews(raw:unknown,expectedCount:number){
   }
 }
 
-function ratingLayout(rating:number,language:Language,serviceKeyword:string,doctorName:string,includeDoctorName:boolean,allowEmoji:boolean,lengthBracket:LengthBracket,keywordInjectionActive:boolean,patientName:string,patientLocality:string){
-  const service=serviceKeyword||'service';
-  const patientRule=patientName&&patientLocality
-    ? `patient_context_rule: mandatory in every draft. Naturally include the exact patient name "${patientName}" and exact locality "${patientLocality}" in the review text for every rating tier, including 1-star, 2-star, and 3-star neutral drafts. Do not drop these details for brevity or line-count constraints.`
-    : patientName
-      ? `patient_context_rule: mandatory in every draft. Naturally include the exact patient name "${patientName}" for every rating tier. Do not drop it for brevity.`
-      : patientLocality
-        ? `patient_context_rule: mandatory in every draft. Naturally include the exact locality "${patientLocality}" for every rating tier. Do not drop it for brevity.`
-        : 'patient_context_rule: no patient name or locality was provided.';
-  const doctorRule=includeDoctorName
-    ? `doctor_name_rule: include the exact doctor name "${doctorName}" naturally in every draft while respecting the rating shape.`
-    : 'doctor_name_rule: do not mention any doctor name.';
-  const emojiRule=allowEmoji
-    ? 'emoji_rule: high-tier only; randomly allow at most one sparse contextual emoji in some drafts, chosen organically from examples like 👍, 🦷, ⭐. Never repeat the same emoji in every draft.'
-    : 'emoji_rule: no emoji.';
-  if(rating===1)return `rating_shape: 1 star. Negative/constructive complaint. ${keywordInjectionActive?`Use "${service}" only if it fits the friction.`:'No keyword requirement; raw emotional complaint is allowed.'} Never soften, hide, block, or convert the complaint into praise. ${patientRule} ${doctorRule} ${emojiRule}`;
-  if(rating===2)return `rating_shape: 2 stars. Casual low-satisfaction plain narrative. Sound disappointed but not dramatic. ${patientRule} ${doctorRule} ${emojiRule}`;
-  if(rating===3)return `rating_shape: 3 stars. Mid-tier neutral review, strictly 2 to 4 text lines per review. ${patientRule} ${doctorRule} ${emojiRule}`;
-  return `rating_shape: ${rating} stars. Use ${lengthBracket.key} length: ${lengthBracket.min}-${lengthBracket.max} lines per review, target ${lengthBracket.target}. ${patientRule} ${doctorRule} ${emojiRule}`;
-}
-
 function shapeLines(content:string,rating:number,language:Language,lengthBracket=selectLengthBracket(rating)){
   // NOTE: Removed hardcoded filler padding that was destroying variation
   // Gemini now handles length entirely - no post-processing padding
@@ -322,12 +301,13 @@ Deno.serve(async(req)=>{
   let db:ReturnType<typeof createClient>|null=null;
   let doctorIdForAudit:string|null=null;
   const fallbackLanguage:Language='english';
+  let fallbackContext:{language:Language;rating:number;keywords:string[]}={language:fallbackLanguage,rating:5,keywords:[]};
 
   if(req.method==='OPTIONS')return reply({ok:true});
   if(req.method!=='POST')return reply({reviews:emergencyDrafts(fallbackLanguage),target_count:TARGET_COUNT,quality:{fallback:true}});
 
+  const requestStartMs=Date.now();
   try{
-    const requestStartMs=Date.now();
     // Parse request
     let body:Record<string,unknown>;
     try{body=await req.json()}
@@ -420,9 +400,9 @@ Deno.serve(async(req)=>{
       rating,
       language,
     };
+    fallbackContext={language,rating,keywords:digest.selected_chips.length?digest.selected_chips:digest.high_priority_keywords};
 
     // Build unified prompt
-    const lengthBracket=selectLengthBracket(rating);
     const selectedArchetypeKey=mapToneToArchetype(digest.tone_preference,[]);
     const selectedArchetype=STRUCTURE_ARCHETYPES[selectedArchetypeKey];
     const personalityVariant=selectPersonalityVariant([]);
@@ -434,7 +414,8 @@ Deno.serve(async(req)=>{
     const selectedConcern=rating>=4&&digest.patient_concerns.length?randomItem(digest.patient_concerns):null;
     const selectedUSP=digest.usp_points.length?randomItem(digest.usp_points):null;
 
-    // Blocked phrases - expanded to include generic filler chains
+    // Blocked phrases - expanded to include generic filler chains AND fallback-template openers
+    // (Gemini must never converge on the same generic lines the hardcoded emergency fallback uses)
     const blockedPhrases=[
       'sharing genuine','overall good','highly satisfied','recently visited','my experience was',
       'I would definitely recommend','five-star','would rate','everything was perfect','best clinic',
@@ -442,11 +423,21 @@ Deno.serve(async(req)=>{
       'The doctor listened to my concerns carefully','The explanation was calm and clear',
       'The clinic environment felt clean','The staff response was polite','The visit did not feel rushed',
       'I understood the next steps properly','Overall the experience felt comfortable','I felt satisfied with my visit',
-      // Generic fillers that create checklist-like endings
       'I had a positive experience','The treatment process ran smoothly','The consultation was meaningful',
       'I felt comfortable and satisfied','The team was cooperative','The atmosphere was welcoming',
-      'I learned about the treatment plan','My confidence grew during the visit','The experience was memorable'
+      'I learned about the treatment plan','My confidence grew during the visit','The experience was memorable',
+      'Clinic visit ka experience theek raha','Mera visit simple raha','Aaj ka visit manageable laga',
+      'My clinic visit went well overall','The appointment was comfortable and well managed',
+      'The clinic felt clean and organised','visit did not meet my expectations','experience felt below expectations',
     ];
+
+    // Rating-aware, per-draft length/structure guidance - always a RANGE, never a fixed sentence count,
+    // and each of the 3 drafts gets a DIFFERENT shape so they can't collapse into the same skeleton
+    const draftShape=rating>=4
+      ? {d1:'3-4 sentences, flowing narrative with connectors',d2:'a single longer paragraph of 5-7 sentences, reading as one continuous account with no short choppy breaks',d3:'3-5 sentences that open with one specific concrete detail (not a generic feeling statement like "the visit went well")'}
+      : rating===3
+        ? {d1:'2-3 sentences, plain and neutral',d2:'3-4 sentences as one continuous paragraph',d3:'2-4 sentences opening with a specific detail, not a generic feeling statement'}
+        : {d1:'2-3 short, blunt sentences',d2:'3-4 sentences as one continuous complaint, not fragmented',d3:'1-3 direct sentences opening with the specific problem, not a generic feeling statement'};
 
     const prompt=`You are a Google review generator for a clinic. Generate exactly ${TARGET_COUNT} authentic patient reviews that READ LIKE REAL PATIENT STORIES, not checklists.
 
@@ -458,37 +449,35 @@ CLINIC CONTEXT:
 
 RATING: ${rating} star${rating!==1?'s':''}
 LANGUAGE: ${digest.language==='hinglish'?'Hinglish (mix Hindi & English)':'English'}
-LENGTH: ${rating>=4 ? '4-7 sentences (NOT more - a real review is concise)' : rating===3 ? '3-5 sentences' : '2-5 sentences'}
 STYLE: ${selectedArchetype}
 TONE: ${personalityVariant}
 CASING: ${casingProfile}
 
-KEYWORDS (MANDATORY):
-${digest.high_priority_keywords.map((kw,i)=>`${i+1}. "${kw}" - MUST appear 2-3 times, woven into existing sentences (NOT in standalone sentences)`).join('\n')}
+KEYWORDS (mandatory, weave naturally - do not give any keyword its own dedicated sentence): ${digest.high_priority_keywords.length?digest.high_priority_keywords.map(kw=>`"${kw}"`).join(', '):'none required'}. Each one must appear 2-3 times total across the review, blended into sentences that already carry other meaning.
 
-NARRATIVE STRUCTURE (CRITICAL - this is what makes reviews authentic):
-- Write like ONE connected story, NOT a checklist of facts
-- Use connector words (and, also, which, so, because, since) to link at least 3-4 sentence pairs
-- Every element (keywords, name, location, doctor name) must be PART OF a sentence that already has flow, not appended as its own standalone line
-- DO NOT place patient name/location in parentheses or brackets - introduce them naturally in opening/middle of first 2 sentences
-- DO NOT end with chains of generic short sentences (e.g., avoid patterns like: "The doctor was attentive. The process was smooth. The consultation was meaningful." one after another)
-- Each sentence must add NEW specific information, not restate the same satisfaction
+REQUIREMENTS (blend all of these into the narrative - do not turn this list into a list of sentences in the output):
+${digest.high_priority_keywords.length?`- All high-priority keywords must be threaded through the story, 2-3 mentions each.`:''}
+${digest.patient_name&&digest.patient_locality?`- Introduce name "${digest.patient_name}" AND locality "${digest.patient_locality}" together in the opening 1-2 sentences, combined with other content in the same sentence (never their own standalone line, never in parentheses).`:digest.patient_name?`- Introduce name "${digest.patient_name}" naturally, fused into a sentence with other content.`:digest.patient_locality?`- Introduce locality "${digest.patient_locality}" naturally, fused into a sentence with other content.`:''}
+${includeDoctorName?`- Mention doctor name "${digest.doctor_name}" fused into a sentence that also carries a keyword (e.g., "Dr. ${digest.doctor_name} explained the ${digest.high_priority_keywords[0]||'procedure'} thoroughly").`:'- Do not mention any doctor name.'}
+${selectedConcern?`- Subtly address "${selectedConcern}", folded into an existing sentence, not standalone.`:''}
+${selectedUSP?`- Reference "${selectedUSP}" once, folded into an existing sentence, not standalone.`:''}
+- Never start with "I am X from Y" in parentheses - that reads as artificial.
+- Never end with a chain of short generic sentences (e.g., avoid: "The doctor was attentive. The process was smooth. The consultation was meaningful." one after another). Every closing sentence must tie back to a specific detail.
+- FORBIDDEN PHRASES (never use, in any draft): ${blockedPhrases.map(p=>`"${p}"`).join(', ')}
+- ${allowEmoji?'Max 1 emoji only, used contextually (👍 🦷 ⭐)':'No emoji.'}
+- Rating tone: ${rating===1?'honest, specific complaints (not just negative)':rating===2?'mixed or disappointed, but fair':rating===3?'balanced neutral':'genuine positive with specific details (not just "satisfied")'}
 
-ACTUAL REQUIREMENTS:
-1. ${digest.high_priority_keywords.length ? `All high-priority keywords ("${digest.high_priority_keywords.join('", "')}") must appear 2-3 times EACH, naturally woven into the narrative` : ''}
-2. ${digest.patient_name&&digest.patient_locality ? `Weave BOTH name "${digest.patient_name}" AND location "${digest.patient_locality}" into the opening 1-2 sentences (examples: "As a ${digest.patient_name} from ${digest.patient_locality}, I visited...", or "I'm ${digest.patient_name}, and my visit from ${digest.patient_locality} to this clinic was...", or integrate them in different sentences with natural connectors)` : digest.patient_name ? `Include name "${digest.patient_name}" naturally in opening or middle` : digest.patient_locality ? `Include location "${digest.patient_locality}" naturally in opening or middle` : ''}
-3. ${includeDoctorName ? `Include doctor name "${digest.doctor_name}" naturally WITH a keyword (e.g., "Dr. ${digest.doctor_name} explained the ${digest.high_priority_keywords[0] || 'procedure'} thoroughly", or "Dr. ${digest.doctor_name}'s expertise with ${digest.high_priority_keywords[0] || 'treatment'} was clear")` : 'Do not mention doctor name'}
-4. ${selectedConcern ? `Subtly address "${selectedConcern}" (only if positive tone)` : ''}
-5. ${selectedUSP ? `Mention "${selectedUSP}" once if relevant (woven in, not standalone)` : ''}
-6. NEVER start with "I am X from Y" in parentheses - that's artificial. Weave it naturally into narrative.
-7. NEVER end with a chain of generic filler sentences - every closing sentence must tie back to a specific detail.
-8. FORBIDDEN PHRASES: ${blockedPhrases.map(p=>`"${p}"`).join(', ')}
-9. ${allowEmoji?'Max 1 emoji only, used contextually (👍 🦷 ⭐)':'No emoji'}
-10. Rating tone: ${rating===1?'honest, specific complaints (not just negative)':''}${rating===2?'mixed or disappointed, but fair':''}${rating===3?'balanced neutral':''}${rating>=4?'genuine positive with specific details (not just "satisfied")':''}
+ANTI-TEMPLATE RULE (mandatory, this is the most important rule): Do NOT write one sentence per requirement (one sentence for an opening feeling, one sentence per keyword, one sentence for patient context) - that produces a robotic checklist, which is exactly what you must avoid. In every draft, at least ONE sentence must combine two or more required elements together - for example a keyword together with the patient's name/locality, two keywords together, or the doctor's name together with a keyword. Thread requirements through fewer, richer sentences, never one-requirement-per-line.
+
+STRUCTURE ACROSS THE ${TARGET_COUNT} DRAFTS (mandatory - vary structure, not just word choice, so the drafts don't collapse into the same skeleton):
+- Draft 1: ${draftShape.d1}.
+- Draft 2: ${draftShape.d2}.
+- Draft 3: ${draftShape.d3}.
+Each draft must be structurally distinct from the others - different sentence counts and a different opening style, not the same shape with swapped words.
 
 TONE CHECK (to avoid checklist sound):
-BAD (checklist, disconnect): "My visit went well. The doctor explained things clearly. The staff was polite. The treatment was smooth. I felt comfortable."
-GOOD (narrative, flow): "My visit went well, and the doctor explained things clearly while also addressing my concerns about the best dental implant procedure. The staff was polite throughout, which helped me feel comfortable as I learned about teeth whitening options."
+BAD (checklist, disconnected, one-requirement-per-sentence): "My visit went well. The doctor explained things clearly. The staff was polite. The treatment was smooth. I felt comfortable."
+GOOD (narrative, multiple elements combined per sentence): "My visit went well, and the doctor explained things clearly while also addressing my concerns about the best dental implant procedure. The staff was polite throughout, which helped me feel comfortable as I learned about teeth whitening options."
 
 OUTPUT FORMAT:
 Return exactly ${TARGET_COUNT} reviews as JSON:
@@ -512,7 +501,11 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
         temperature:0.85,
         topP:0.95,
         topK:40,
-        maxOutputTokens:Math.min(lengthBracket.max*25*TARGET_COUNT+100,2000),
+        // FIXED: was derived from lengthBracket.max, which could be as low as 3 ('crisp' roll,
+        // 15% of high-rating requests) -> maxOutputTokens as low as 325, truncating Gemini's JSON
+        // mid-response and forcing parseReviews() to fail, silently falling back to emergencyDrafts().
+        // Fixed budget is generous enough for 3 JSON-wrapped reviews of up to ~7 sentences each.
+        maxOutputTokens:2500,
         responseMimeType:'application/json',
       },
     };
@@ -663,6 +656,6 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
     const totalMs=Date.now()-requestStartMs;
     console.error('❌ Unhandled error after',totalMs,'ms:',error);
     void logSystemError(db,doctorIdForAudit,error instanceof Error?error.message:String(error));
-    return reply({reviews:emergencyDrafts('english'),target_count:TARGET_COUNT,quality:{fallback:true,error_after_ms:totalMs}});
+    return reply({reviews:emergencyDrafts(fallbackContext.language,fallbackContext.rating,fallbackContext.keywords),target_count:TARGET_COUNT,quality:{fallback:true,error_after_ms:totalMs}});
   }
 });
