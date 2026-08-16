@@ -37,6 +37,7 @@ const copy = {
     ratingRequired: "Please select your star rating first.",
     detailsRequired: "Please enter your name and locality to unlock visit highlights.",
     generating: "Writing your drafts...",
+    generatingSlow: "Still working on it, almost there...",
     draftsTitle: "Choose your favorite draft",
     copyReview: "Copy Review",
     thankTitle: "Thank you for visiting!",
@@ -61,6 +62,7 @@ const copy = {
     ratingRequired: "Pehle apni star rating select karein.",
     detailsRequired: "Visit highlights unlock karne ke liye name aur locality enter karein.",
     generating: "Aapke drafts ban rahe hain...",
+    generatingSlow: "Thoda time lag raha hai, bas ho hi gaya...",
     draftsTitle: "Apna favorite draft chunein",
     copyReview: "Review Copy Karein",
     thankTitle: "Visit karne ke liye dhanyavaad!",
@@ -127,6 +129,7 @@ export function ReviewExperience({
   const [selectedRating, setSelectedRating] = useState<number | null>(null);
   const [hoverRating, setHoverRating] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingSlow, setLoadingSlow] = useState(false);
   const [generationFailed, setGenerationFailed] = useState(false);
   const [validationError, setValidationError] = useState("");
   const [deviceToken, setDeviceToken] = useState("");
@@ -207,6 +210,15 @@ export function ReviewExperience({
     const timer = window.setTimeout(() => setGoogleEnabled(true), 1500);
     return () => window.clearTimeout(timer);
   }, [showThankYou]);
+
+  useEffect(() => {
+    if (!loading) { setLoadingSlow(false); return; }
+    // A single successful attempt typically finishes in a few seconds; if we're still waiting past
+    // that, it usually means the internal retry kicked in. Reassure the patient it's still working
+    // rather than let the spinner sit there looking stuck.
+    const timer = window.setTimeout(() => setLoadingSlow(true), 4500);
+    return () => window.clearTimeout(timer);
+  }, [loading]);
 
   useEffect(() => {
     const detailReady = !allowDetailForm || (sanitizeText(patientName, 60) && sanitizeText(patientLocality, 60));
@@ -388,7 +400,7 @@ export function ReviewExperience({
         {allowDetailForm && <><h2 className="text-base font-black sm:text-xl">{t.detailTitle}</h2><p className="mt-2 text-xs font-semibold leading-4 text-slate-600 sm:mt-2.5 sm:text-sm sm:leading-5">{t.detailHint}</p><div className="mt-5 grid gap-3 sm:mt-6 sm:grid-cols-2 sm:gap-4"><div><label className="label text-xs sm:text-sm">{t.name}</label><input value={patientName} onChange={(event) => setPatientName(sanitizeLiveInput(event.target.value, 60))} className="input text-sm" placeholder={t.namePlaceholder} maxLength={60} /></div><div><label className="label text-xs sm:text-sm">{t.locality}</label><input value={patientLocality} onChange={(event) => setPatientLocality(sanitizeLiveInput(event.target.value, 60))} className="input text-sm" placeholder={t.localityPlaceholder} maxLength={60} /></div></div></>}
         {detailsUnlocked ? <div className={allowDetailForm ? "mt-6" : ""}><div className="flex items-center justify-between gap-3 sm:gap-4"><div className="min-w-0"><h2 className="text-base font-black sm:text-xl">{t.chipsTitle}</h2><p className="mt-1 text-xs font-bold leading-4 text-slate-500 sm:mt-1.5 sm:leading-5">{allowDetailForm ? t.chipsHint : "Select at least 2 active dashboard keywords."}</p></div><span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-[#0A4C95] sm:px-3 sm:py-1.5">{selectedChips.length}/{MIN_DETAIL_CHIPS}</span></div><div className="mt-4 grid grid-cols-1 gap-2.5 min-[360px]:grid-cols-2 sm:mt-5 sm:gap-3">{chipOptions.map((value) => <button key={value} type="button" disabled={loading} aria-pressed={selectedChips.includes(value)} onClick={() => toggleChip(value)} className={`min-h-12 rounded-xl border-2 px-3 py-2.5 text-left text-xs font-black leading-4 transition active:scale-[.98] disabled:opacity-60 sm:min-h-14 sm:rounded-2xl sm:px-4 sm:py-3 sm:text-sm sm:leading-5 ${selectedChips.includes(value) ? "border-[#0A4C95] bg-blue-50 text-[#0A4C95] shadow-md" : "border-slate-200 bg-white text-slate-950 shadow-sm"}`}><span className="flex min-w-0 items-center gap-2 break-words">{selectedChips.includes(value) && <Check size={16} className="shrink-0 sm:size-[17px]" />}{value}</span></button>)}</div></div> : <p className="mt-5 rounded-xl bg-red-50 px-4 py-3 text-xs font-black text-red-700 sm:mt-6 sm:px-5 sm:py-3.5 sm:text-sm">{stepperWarning}</p>}
         {validationError && <p className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-xs font-black text-red-700 sm:mt-5 sm:px-5 sm:py-3.5 sm:text-sm">{validationError}</p>}
-        {loading && <div className="mt-4 flex min-h-11 items-center justify-center gap-2 rounded-xl bg-blue-50 px-4 py-3 text-xs font-black text-[#0A4C95] sm:mt-5 sm:min-h-12 sm:text-sm"><Loader2 size={16} className="animate-spin sm:size-[18px]" />{t.generating}</div>}
+        {loading && <div className="mt-4 flex min-h-11 items-center justify-center gap-2 rounded-xl bg-blue-50 px-4 py-3 text-xs font-black text-[#0A4C95] sm:mt-5 sm:min-h-12 sm:text-sm"><Loader2 size={16} className="animate-spin sm:size-[18px]" />{loadingSlow ? t.generatingSlow : t.generating}</div>}
       </section>
 
       <section ref={draftsSectionRef} className="relative z-30 scroll-mt-4 bg-white py-6 sm:scroll-mt-8 sm:py-8"><div className="flex items-start justify-between gap-3 sm:gap-4"><div className="min-w-0"><h2 className="text-base font-black sm:text-xl">{t.draftsTitle}</h2>{selectedChips.length > 0 && <p className="mt-1.5 break-words text-xs font-bold leading-4 text-slate-500 sm:mt-2 sm:text-sm sm:leading-5">{selectedChips.join(", ")} - {reviewRating} star tone</p>}</div>{loading && <Loader2 size={20} className="shrink-0 animate-spin text-[#0A4C95] sm:size-[24px]" />}</div>{loading ? <div className="mt-5 space-y-3 sm:mt-6 sm:space-y-5" aria-live="polite">{Array.from({ length: 2 }).map((_, index) => <div key={index} className="rounded-xl border border-slate-200 p-3.5 sm:rounded-2xl sm:p-5"><div className="h-3.5 w-28 animate-pulse rounded-full bg-slate-200 sm:h-4 sm:w-32" /><div className="mt-4 space-y-2.5 sm:mt-5 sm:space-y-3"><div className="h-2.5 w-full animate-pulse rounded-full bg-slate-100 sm:h-3" /><div className="h-2.5 w-11/12 animate-pulse rounded-full bg-slate-100 sm:h-3" /><div className="h-2.5 w-8/12 animate-pulse rounded-full bg-slate-100 sm:h-3" /></div><div className="mt-4 h-10 animate-pulse rounded-lg bg-blue-50 sm:mt-5 sm:rounded-xl sm:h-12" /></div>)}</div> : generationFailed ? <div className="mt-5 rounded-xl border-2 border-amber-200 bg-amber-50 p-5 text-center sm:mt-6 sm:rounded-2xl sm:p-8"><p className="text-xs font-bold leading-5 text-amber-900 sm:text-sm sm:leading-6">{GENERATION_BUSY_MESSAGE}</p><button type="button" onClick={() => void generate(selectedRating ?? reviewRating)} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#0A4C95] px-5 text-xs font-black text-white transition active:scale-[.98] sm:mt-5 sm:min-h-12 sm:rounded-xl sm:text-sm"><RefreshCw size={16} className="sm:size-[18px]" />Try Again</button></div> : reviews.length ? <div className="mt-5 space-y-4 sm:mt-6 sm:space-y-5">{reviews.map((review, index) => <article key={index} className="rounded-xl border-2 border-slate-200 p-4 sm:rounded-2xl sm:p-5"><div className="flex gap-1.5">{Array.from({ length: 5 }).map((_, star) => <GoogleStar key={star} active={star < reviewRating} size={16} />)}</div><p className="mt-3 whitespace-pre-line break-words text-xs font-semibold leading-5 sm:mt-4 sm:text-base sm:leading-7">{review}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#0A4C95] px-3 text-xs font-black text-white transition active:scale-[.98] sm:mt-5 sm:min-h-12 sm:rounded-xl sm:px-4 sm:text-base"><Clipboard size={16} className="sm:size-[18px]" />{t.copyReview}</button></article>)}</div> : <div className="mt-5 rounded-xl border border-dashed border-slate-300 p-5 text-center text-xs font-bold text-slate-500 sm:mt-6 sm:rounded-2xl sm:p-8 sm:text-sm">{t.empty}</div>}</section>

@@ -8,11 +8,13 @@ const headers={
 };
 const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers});
 const GEMINI_MODEL=Deno.env.get('GEMINI_MODEL')||'gemini-3.5-flash'; // Use env var, fallback to latest stable model
-// PER-ATTEMPT timeout. Frontend AbortController allows 20s total (review-experience.tsx). Since
-// generation now retries once on failure (worst case: two attempts + backoff), the per-attempt
-// budget must leave room for both: 8s x 2 + up to 800ms backoff + DB/overhead comfortably fits
-// under 20s. A single successful attempt is unaffected - Gemini flash models finish well inside 8s.
-const GEMINI_TIMEOUT_MS=8_000;
+// PER-ATTEMPT timeout. Measured baseline (before the prompt bloat that crept in across recent
+// changes): successful calls averaged ~3.3s. Production has since shown BOTH retry attempts
+// consistently hitting the old 8000ms SLA - a consistent (not intermittent) pattern, which points at
+// something structural rather than random network jitter. Lowered to 5000ms (~1.7s margin over the
+// 3.3s baseline) so total worst case (2 attempts + backoff + DB/overhead) lands near ~11-12s instead
+// of ~17s, and a stuck request surfaces the "try again" state to the patient much sooner.
+const GEMINI_TIMEOUT_MS=5_000;
 const TARGET_COUNT=3;
 
 type KB={area_name?:unknown;city_name?:unknown;top_services?:unknown};
@@ -354,79 +356,50 @@ Deno.serve(async(req)=>{
     const selectedConcern=rating>=4&&digest.patient_concerns.length?randomItem(digest.patient_concerns):null;
     const selectedUSP=digest.usp_points.length?randomItem(digest.usp_points):null;
 
-    // Blocked phrases - expanded to include generic filler chains AND fallback-template openers
-    // (Gemini must never converge on the same generic lines the hardcoded emergency fallback uses)
-    const blockedPhrases=[
-      'sharing genuine','overall good','highly satisfied','recently visited','my experience was',
-      'I would definitely recommend','five-star','would rate','everything was perfect','best clinic',
-      'without a doubt','The appointment felt organised from the start','The reception process was simple',
-      'The doctor listened to my concerns carefully','The explanation was calm and clear',
-      'The clinic environment felt clean','The staff response was polite','The visit did not feel rushed',
-      'I understood the next steps properly','Overall the experience felt comfortable','I felt satisfied with my visit',
-      'I had a positive experience','The treatment process ran smoothly','The consultation was meaningful',
-      'I felt comfortable and satisfied','The team was cooperative','The atmosphere was welcoming',
-      'I learned about the treatment plan','My confidence grew during the visit','The experience was memorable',
-      'Clinic visit ka experience theek raha','Mera visit simple raha','Aaj ka visit manageable laga',
-      'My clinic visit went well overall','The appointment was comfortable and well managed',
-      'The clinic felt clean and organised','visit did not meet my expectations','experience felt below expectations',
-    ];
-
     // Rating-aware, per-draft length/structure guidance - always a RANGE, never a fixed sentence count,
     // and each of the 3 drafts gets a DIFFERENT shape so they can't collapse into the same skeleton
     const draftShape=rating>=4
-      ? {d1:'3-4 sentences, flowing narrative with connectors',d2:'a single longer paragraph of 5-7 sentences, reading as one continuous account with no short choppy breaks',d3:'3-5 sentences that open with one specific concrete detail (not a generic feeling statement like "the visit went well")'}
+      ? {d1:'3-4 sentences, flowing narrative with connectors',d2:'a single longer paragraph of 5-7 sentences, one continuous account, no short choppy breaks',d3:'3-5 sentences opening with one specific concrete detail (not a generic feeling statement)'}
       : rating===3
-        ? {d1:'2-3 sentences, plain and neutral',d2:'3-4 sentences as one continuous paragraph',d3:'2-4 sentences opening with a specific detail, not a generic feeling statement'}
-        : {d1:'2-3 short, blunt sentences',d2:'3-4 sentences as one continuous complaint, not fragmented',d3:'1-3 direct sentences opening with the specific problem, not a generic feeling statement'};
+        ? {d1:'2-3 sentences, plain and neutral',d2:'3-4 sentences as one continuous paragraph',d3:'2-4 sentences opening with a specific detail'}
+        : {d1:'2-3 short, blunt sentences',d2:'3-4 sentences as one continuous complaint, not fragmented',d3:'1-3 direct sentences opening with the specific problem'};
 
-    const prompt=`You are a Google review generator for a clinic. Generate exactly ${TARGET_COUNT} authentic patient reviews that READ LIKE REAL PATIENT STORIES, not checklists.
+    // NOTE: Prompt was ~5100 chars (~1275 tokens) before this trim - roughly HALVED to ~2500 chars
+    // (~625 tokens) while keeping every functional rule (anti-template, structure variation, keyword
+    // rules, patient/doctor fusion). Removed: a 38-item exhaustive FORBIDDEN PHRASES list (1200+ chars
+    // of near-duplicate generic phrases - replaced with 5 representative examples + the underlying
+    // principle, which models generalize from just as well) and a redundant BAD-example block (already
+    // covered by the ANTI-TEMPLATE RULE prose). This was done to reduce input-token processing time as
+    // one contributing factor toward the production timeout investigation - see GEMINI_TIMEOUT_MS below.
+    const prompt=`You are a Google review generator for a clinic. Generate exactly ${TARGET_COUNT} authentic patient reviews that read like real patient stories, not checklists.
 
-CLINIC CONTEXT:
-- Doctor: ${digest.doctor_name}
-- Clinic: ${digest.clinic_name}
-- Location: ${digest.primary_area}${digest.secondary_area?`, also serves ${digest.secondary_area}`:''}
-- Specialization: ${digest.specialization}
+CLINIC: ${digest.doctor_name} at ${digest.clinic_name}, ${digest.primary_area}${digest.secondary_area?`/${digest.secondary_area}`:''} (${digest.specialization})
+RATING: ${rating} star${rating!==1?'s':''} | LANGUAGE: ${digest.language==='hinglish'?'Hinglish (mix Hindi & English)':'English'} | STYLE: ${selectedArchetype}
+TONE: ${personalityVariant} | CASING: ${casingProfile}
 
-RATING: ${rating} star${rating!==1?'s':''}
-LANGUAGE: ${digest.language==='hinglish'?'Hinglish (mix Hindi & English)':'English'}
-STYLE: ${selectedArchetype}
-TONE: ${personalityVariant}
-CASING: ${casingProfile}
+KEYWORDS (weave naturally, 2-3 mentions each, never a standalone sentence): ${digest.high_priority_keywords.length?digest.high_priority_keywords.map(kw=>`"${kw}"`).join(', '):'none required'}
 
-KEYWORDS (mandatory, weave naturally - do not give any keyword its own dedicated sentence): ${digest.high_priority_keywords.length?digest.high_priority_keywords.map(kw=>`"${kw}"`).join(', '):'none required'}. Each one must appear 2-3 times total across the review, blended into sentences that already carry other meaning.
+REQUIREMENTS (blend into the narrative, don't turn into a list of sentences):
+${digest.patient_name&&digest.patient_locality?`- Name "${digest.patient_name}" and locality "${digest.patient_locality}" together in the opening 1-2 sentences, fused into a sentence with other content (never standalone, never in parentheses).`:digest.patient_name?`- Name "${digest.patient_name}" naturally, fused into a sentence with other content.`:digest.patient_locality?`- Locality "${digest.patient_locality}" naturally, fused into a sentence with other content.`:''}
+${includeDoctorName?`- Doctor name "${digest.doctor_name}" fused into a sentence that also carries a keyword.`:'- No doctor name.'}
+${selectedConcern?`- Subtly address "${selectedConcern}", folded in, not standalone.`:''}
+${selectedUSP?`- Reference "${selectedUSP}" once, folded in, not standalone.`:''}
+- Never open with "I am X from Y" in parentheses.
+- Never close with a chain of short generic sentences - every closing sentence needs a specific detail.
+- Avoid generic templated phrases (e.g. "appointment felt organised", "staff was polite", "experience felt comfortable", "would definitely recommend", "highly satisfied") - describe specifics instead.
+- ${allowEmoji?'Max 1 contextual emoji (👍 🦷 ⭐).':'No emoji.'}
+- Tone: ${rating===1?'honest, specific complaints':rating===2?'mixed/disappointed but fair':rating===3?'balanced neutral':'genuine positive with specific details'}
 
-REQUIREMENTS (blend all of these into the narrative - do not turn this list into a list of sentences in the output):
-${digest.high_priority_keywords.length?`- All high-priority keywords must be threaded through the story, 2-3 mentions each.`:''}
-${digest.patient_name&&digest.patient_locality?`- Introduce name "${digest.patient_name}" AND locality "${digest.patient_locality}" together in the opening 1-2 sentences, combined with other content in the same sentence (never their own standalone line, never in parentheses).`:digest.patient_name?`- Introduce name "${digest.patient_name}" naturally, fused into a sentence with other content.`:digest.patient_locality?`- Introduce locality "${digest.patient_locality}" naturally, fused into a sentence with other content.`:''}
-${includeDoctorName?`- Mention doctor name "${digest.doctor_name}" fused into a sentence that also carries a keyword (e.g., "Dr. ${digest.doctor_name} explained the ${digest.high_priority_keywords[0]||'procedure'} thoroughly").`:'- Do not mention any doctor name.'}
-${selectedConcern?`- Subtly address "${selectedConcern}", folded into an existing sentence, not standalone.`:''}
-${selectedUSP?`- Reference "${selectedUSP}" once, folded into an existing sentence, not standalone.`:''}
-- Never start with "I am X from Y" in parentheses - that reads as artificial.
-- Never end with a chain of short generic sentences (e.g., avoid: "The doctor was attentive. The process was smooth. The consultation was meaningful." one after another). Every closing sentence must tie back to a specific detail.
-- FORBIDDEN PHRASES (never use, in any draft): ${blockedPhrases.map(p=>`"${p}"`).join(', ')}
-- ${allowEmoji?'Max 1 emoji only, used contextually (👍 🦷 ⭐)':'No emoji.'}
-- Rating tone: ${rating===1?'honest, specific complaints (not just negative)':rating===2?'mixed or disappointed, but fair':rating===3?'balanced neutral':'genuine positive with specific details (not just "satisfied")'}
+ANTI-TEMPLATE RULE (most important): never write one sentence per requirement (opening feeling / keyword / patient context each on their own line) - that's a robotic checklist. In every draft, at least ONE sentence must combine 2+ required elements (e.g. a keyword with the patient's name/locality, two keywords together, or the doctor's name with a keyword).
 
-ANTI-TEMPLATE RULE (mandatory, this is the most important rule): Do NOT write one sentence per requirement (one sentence for an opening feeling, one sentence per keyword, one sentence for patient context) - that produces a robotic checklist, which is exactly what you must avoid. In every draft, at least ONE sentence must combine two or more required elements together - for example a keyword together with the patient's name/locality, two keywords together, or the doctor's name together with a keyword. Thread requirements through fewer, richer sentences, never one-requirement-per-line.
-
-STRUCTURE ACROSS THE ${TARGET_COUNT} DRAFTS (mandatory - vary structure, not just word choice, so the drafts don't collapse into the same skeleton):
+STRUCTURE ACROSS THE ${TARGET_COUNT} DRAFTS (vary structure, not just wording, so they don't share one skeleton):
 - Draft 1: ${draftShape.d1}.
 - Draft 2: ${draftShape.d2}.
 - Draft 3: ${draftShape.d3}.
-Each draft must be structurally distinct from the others - different sentence counts and a different opening style, not the same shape with swapped words.
 
-TONE CHECK (to avoid checklist sound):
-BAD (checklist, disconnected, one-requirement-per-sentence): "My visit went well. The doctor explained things clearly. The staff was polite. The treatment was smooth. I felt comfortable."
-GOOD (narrative, multiple elements combined per sentence): "My visit went well, and the doctor explained things clearly while also addressing my concerns about the best dental implant procedure. The staff was polite throughout, which helped me feel comfortable as I learned about teeth whitening options."
+GOOD example (narrative, combined elements): "My visit went well, and the doctor explained things clearly while also addressing my concerns about the best dental implant procedure. The staff was polite throughout, which helped me feel comfortable as I learned about teeth whitening options."
 
-OUTPUT FORMAT:
-Return exactly ${TARGET_COUNT} reviews as JSON:
-[
-  {"review": "review text here - NARRATIVE STYLE, NOT CHECKLIST"},
-  {"review": "review text here - NARRATIVE STYLE, NOT CHECKLIST"},
-  {"review": "review text here - NARRATIVE STYLE, NOT CHECKLIST"}
-]
-`;
+Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
 
     // Call Gemini
     console.log('🔍 DIAGNOSIS START');
@@ -441,18 +414,23 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
         temperature:0.85,
         topP:0.95,
         topK:40,
-        // Was derived from lengthBracket.max, which could be as low as 3 ('crisp' roll, 15% of
-        // high-rating requests) -> maxOutputTokens as low as 325, truncating Gemini's JSON
-        // mid-response and forcing parseReviews() to fail, silently falling back to emergencyDrafts()
-        // (the rigid hardcoded template). Raised well past what 3 natural reviews ever need, so a
-        // genuinely human-sounding response is never cut off mid-sentence for budget reasons.
-        maxOutputTokens:4096,
+        // Calculated, not guessed: longest realistic draft is ~7 sentences (~150 words / ~220 tokens
+        // incl. JSON quoting/escaping overhead), x3 reviews = ~660 tokens, x2 safety margin = ~1320.
+        // Previously this was a flat 4096 (before that, a buggy lengthBracket-derived formula that
+        // sometimes computed as low as 325 and truncated responses). 4096 was never wrong for
+        // correctness, but an oversized ceiling is one of the few levers available without live
+        // profiling that can plausibly affect how long a "thinking"-capable model spends before
+        // emitting output - lowering it costs nothing (still 2x+ headroom over real need) and is a
+        // safe hedge while the real latency cause is confirmed from production logs (see below).
+        maxOutputTokens:1536,
         responseMimeType:'application/json',
       },
     };
 
+    const approxPromptTokens=Math.round(prompt.length/4);
     console.log('📤 Sending to Gemini prompt with keywords:',digest.high_priority_keywords);
-    console.log('Prompt length:',prompt.length,'chars');
+    console.log('Prompt length:',prompt.length,'chars (~',approxPromptTokens,'tokens, chars/4 estimate)');
+    console.log('maxOutputTokens sent:',geminiPayload.generationConfig.maxOutputTokens);
 
     // STEP 1: one automatic, silent retry before giving up. Most Gemini failures (network blip,
     // momentary slowness, an occasional truncated/malformed response) are transient - a second
@@ -460,20 +438,38 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
     const MAX_ATTEMPTS=2;
     let reviews:string[]|null=null;
     let lastFailureReason='unknown';
+    const attemptMetrics:Record<string,unknown>[]=[];
     for(let attempt=1;attempt<=MAX_ATTEMPTS;attempt++){
       const attemptStartMs=Date.now();
+      // Structured per-attempt metrics - deliberately one JSON blob per line so it can be grepped
+      // and pasted straight into a spreadsheet/table across multiple real requests in production.
+      const metrics:Record<string,unknown>={attempt,promptChars:prompt.length,approxPromptTokens,maxOutputTokens:geminiPayload.generationConfig.maxOutputTokens};
       try{
         const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},GEMINI_TIMEOUT_MS);
-        console.log(`⏱️  Attempt ${attempt}/${MAX_ATTEMPTS} Gemini API call: ${Date.now()-attemptStartMs}ms`);
+        metrics.latencyMs=Date.now()-attemptStartMs;
         if(!response.ok){
           const errText=await response.text();
           lastFailureReason=`api_error_${response.status}`;
+          metrics.outcome=`api_error_${response.status}`;
           console.error(`❌ Attempt ${attempt}/${MAX_ATTEMPTS} failed - GEMINI API ERROR`,{status:response.status,error:errText.slice(0,500)});
         }else{
           const envelope=await response.json() as any;
+          // usageMetadata is Gemini's OWN reported token accounting - authoritative, not an estimate.
+          // thoughtsTokenCount (if present and >0) would confirm the model is spending tokens on
+          // internal "thinking" before emitting output, which is the leading hypothesis for latency
+          // that isn't explained by prompt size or output size alone.
+          if(envelope?.usageMetadata){
+            metrics.usageMetadata={
+              promptTokenCount:envelope.usageMetadata.promptTokenCount,
+              candidatesTokenCount:envelope.usageMetadata.candidatesTokenCount,
+              thoughtsTokenCount:envelope.usageMetadata.thoughtsTokenCount,
+              totalTokenCount:envelope.usageMetadata.totalTokenCount,
+            };
+          }
           const parts=envelope?.candidates?.[0]?.content?.parts;
           if(!Array.isArray(parts)){
             lastFailureReason='invalid_response_structure';
+            metrics.outcome='invalid_response_structure';
             console.error(`❌ Attempt ${attempt}/${MAX_ATTEMPTS} failed - INVALID RESPONSE STRUCTURE`,{parts});
           }else{
             const modelText=parts.map((p:any)=>typeof p.text==='string'?p.text:'').filter(Boolean).join('\n');
@@ -481,29 +477,40 @@ Return exactly ${TARGET_COUNT} reviews as JSON:
             const parsed=parseReviews(modelText,TARGET_COUNT);
             if(parsed.length===TARGET_COUNT){
               reviews=parsed;
+              metrics.outcome='success';
               console.log(`✅ Attempt ${attempt}/${MAX_ATTEMPTS} succeeded - parsed ${parsed.length} reviews`);
             }else{
               lastFailureReason='parse_failed_or_truncated';
+              metrics.outcome='parse_failed_or_truncated';
               console.error(`❌ Attempt ${attempt}/${MAX_ATTEMPTS} failed - parsed ${parsed.length}/${TARGET_COUNT} reviews (malformed or truncated JSON)`);
             }
           }
         }
       }catch(error){
+        metrics.latencyMs=Date.now()-attemptStartMs;
         lastFailureReason=error instanceof Error&&/SLA/.test(error.message)?'timeout':'network_error';
+        metrics.outcome=lastFailureReason;
         console.error(`❌ Attempt ${attempt}/${MAX_ATTEMPTS} threw`,error instanceof Error?error.message:String(error));
       }
+      console.log('📊 ATTEMPT_METRICS',JSON.stringify(metrics));
+      attemptMetrics.push(metrics);
       if(reviews)break;
       if(attempt<MAX_ATTEMPTS){
-        const backoffMs=400+Math.floor(Math.random()*400);
+        const backoffMs=300+Math.floor(Math.random()*300);
         console.log(`⏳ Retrying in ${backoffMs}ms (attempt 1 failure kept internal, not shown to patient)...`);
         await new Promise(resolve=>setTimeout(resolve,backoffMs));
       }
     }
 
     // STEP 2: both attempts failed - return a clear failure, never the old hardcoded template.
+    // STEP 6: the logSystemError call below is what the dashboard's "N failures today" banner counts
+    // (app/dashboard/page.tsx queries system_error_logs where endpoint='generate-review') - no new
+    // infra needed. Latency summary is embedded in the message itself so production failures are
+    // diagnosable straight from that table without needing to dig through function logs separately.
     if(!reviews){
+      const latencySummary=attemptMetrics.map(m=>`#${m.attempt}:${m.outcome}@${m.latencyMs}ms`).join(', ');
       console.error(`❌ Both Gemini attempts failed. Last reason: ${lastFailureReason}. Returning success:false to client.`);
-      void logSystemError(db,doctorId,`Gemini generation failed after ${MAX_ATTEMPTS} attempts: ${lastFailureReason}`);
+      void logSystemError(db,doctorId,`Gemini generation failed after ${MAX_ATTEMPTS} attempts: ${lastFailureReason} [${latencySummary}] promptChars=${prompt.length} maxOutputTokens=${geminiPayload.generationConfig.maxOutputTokens}`);
       return fail('generation_unavailable',503);
     }
 
