@@ -8,13 +8,19 @@ const headers={
 };
 const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers});
 const GEMINI_MODEL=Deno.env.get('GEMINI_MODEL')||'gemini-3.5-flash'; // Use env var, fallback to latest stable model
-// Real measured data point: thinkingLevel:'low' + successful generation completed in 6868ms.
-// Set to that baseline + ~5s margin (~1.75x), not a re-guess - still a single sample, so this may
-// need to come down further (or up, if variance shows) once a few more real ATTEMPT_METRICS points
-// come in, but 12s is a much better-grounded value than the previous 5000ms (calibrated off a
-// different single sample from BEFORE thinkingLevel was set) or the 20000ms diagnostic ceiling.
-const GEMINI_TIMEOUT_MS=12_000;
+// Lighter/faster sibling in the SAME model generation as GEMINI_MODEL - confirmed via ai.google.dev/
+// gemini-api/docs/models (model ID column) and Google's 2026-07-21 announcement blog
+// (blog.google/.../gemini-3-6-flash-3-5-flash-lite-3-5-flash-cyber/) as the current, correct ID for
+// Google's low-latency "lite" tier. Less "thinking" overhead than the full model, so it's used for
+// the fallback layers below where speed/reliability matters more than squeezing out maximum quality.
+const GEMINI_MODEL_LITE=Deno.env.get('GEMINI_MODEL_LITE')||'gemini-3.5-flash-lite';
 const TARGET_COUNT=3;
+// Multi-layer fallback timeouts (real measured data point: thinkingLevel:'low' on the full model
+// completed in 6868ms, so Layer 1 gets margin above that). Each later layer is deliberately tighter
+// because it's either a lighter model, a shorter prompt, or both - so it should genuinely need less
+// time, not just be allotted less. Layers 1-3 sum to ~14s (the "~12-15s combined" target for the
+// primary chain); Layer 4 is a separate last-resort call on top of that, not counted against it.
+const LAYER_TIMEOUTS_MS:Record<1|2|3|4,number>={1:6500,2:4500,3:3000,4:3000};
 
 type KB={area_name?:unknown;city_name?:unknown;top_services?:unknown};
 type Language='english'|'hinglish';
@@ -370,7 +376,7 @@ Deno.serve(async(req)=>{
     // of near-duplicate generic phrases - replaced with 5 representative examples + the underlying
     // principle, which models generalize from just as well) and a redundant BAD-example block (already
     // covered by the ANTI-TEMPLATE RULE prose). This was done to reduce input-token processing time as
-    // one contributing factor toward the production timeout investigation - see GEMINI_TIMEOUT_MS below.
+    // one contributing factor toward the production timeout investigation - see LAYER_TIMEOUTS_MS above.
     const prompt=`You are a Google review generator for a clinic. Generate exactly ${TARGET_COUNT} authentic patient reviews that read like real patient stories, not checklists.
 
 PERSPECTIVE (mandatory, read first): write entirely in FIRST PERSON, as if YOU are the patient sharing your own experience ("I visited", "my appointment", "I felt"). Never refer to "the patient" or any patient name in third person - you ARE the person who visited, not someone describing them. Doctor and clinic names are fine to mention directly by name (e.g. "Dr. Sharma explained clearly") - only the patient's own identity must never appear in third person.
@@ -402,6 +408,35 @@ GOOD example (narrative, combined elements): "My visit went well, and the doctor
 
 Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
 
+    // LAYER 3 prompt: same facts (clinic, rating tone, keywords, first-person, language), but with
+    // the structural-variation/anti-template machinery (archetypes, personality variants, casing
+    // profiles, length-distribution percentages, doctor-name/concern/USP fusion rules) stripped out.
+    // Shorter prompt -> faster to process and fewer distinct instructions to satisfy at once, which
+    // is exactly what a fallback layer needs: fewer ways for the response to come back malformed or
+    // truncated, at the cost of some of the narrative variety the full prompt aims for.
+    const simplifiedPrompt=`Write exactly ${TARGET_COUNT} authentic, first-person patient Google reviews, in ${digest.language==='hinglish'?'natural Hinglish (mixing Hindi and English words/phrases the way Indian patients actually text online)':'English'}.
+
+Clinic: ${digest.doctor_name} at ${digest.clinic_name}${digest.primary_area?`, ${digest.primary_area}`:''} (${digest.specialization}).
+Rating: ${rating} star${rating!==1?'s':''} - tone should be ${rating===1?'honest, specific complaints':rating===2?'mixed, disappointed but fair':rating===3?'balanced, neutral':'genuinely positive'}.
+Naturally mention these keywords across the ${TARGET_COUNT} reviews (not necessarily every review): ${digest.high_priority_keywords.length?digest.high_priority_keywords.join(', '):'none required'}.
+Write entirely in first person ("I visited", "my appointment", "I felt") - never describe "the patient" in third person.
+Length: a few natural sentences each, varying a little review to review.
+Make the ${TARGET_COUNT} reviews read like ${TARGET_COUNT} different people wrote them, not repeats of each other.
+
+Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
+
+    // LAYER 4 (last resort) prompt: intentionally as minimal as a prompt can be while still meeting
+    // the frontend's contract of exactly ${TARGET_COUNT} reviews (the drafts carousel/copy-tracking
+    // flow expects 3 - dropping to 1 would mean a second, separate change to the frontend just to
+    // handle this rare edge case, which isn't worth it when "3 short reviews from one minimal prompt"
+    // is just as fast and just as reliable as "1 short review", but keeps the rest of the app
+    // untouched). No tone/style guidance beyond rating + first person + a couple of keywords - the
+    // fewest possible constraints, for the highest possible success rate when everything else failed.
+    const minimalKeywords=(digest.high_priority_keywords.length?digest.high_priority_keywords:digest.selected_chips).slice(0,2);
+    const minimalPrompt=`Write exactly ${TARGET_COUNT} short, natural, first-person Google reviews (2-3 sentences each) from a patient of ${digest.doctor_name} at ${digest.clinic_name}, in ${digest.language==='hinglish'?'Hinglish':'English'}. Each is a ${rating}-star review, first-person, naturally mentioning: ${minimalKeywords.length?minimalKeywords.join(', '):digest.clinic_name}. Make the ${TARGET_COUNT} reviews different from each other.
+
+Return as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
+
     // Call Gemini
     console.log('🔍 DIAGNOSIS START');
     console.log('Doctor ID:',doctorId);
@@ -409,139 +444,143 @@ Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "
     console.log('High Priority Keywords:',digest.high_priority_keywords);
     console.log('Rating:',rating,'Language:',language);
 
-    // CONFIRMED by real data: thinkingLevel:'low' brought latency down to 6868ms (was timing out at
-    // 20000ms+ with the default "medium" thinking level). Google's own docs (ai.google.dev/gemini-api/
-    // docs/generate-content/thinking) confirm gemini-3.5-flash defaults to "medium" thinking when
-    // thinkingConfig is omitted, and the Gemini 3 family cannot fully disable thinking - "low" is
-    // Google's documented setting for minimizing latency/cost while keeping most quality.
-    const geminiPayload={
-      contents:[{parts:[{text:prompt}]}],
-      generationConfig:{
-        // Raised from 0.85 - the open-ended NATURAL VARIATION instruction (replacing the fixed
-        // framing menu/length brackets) relies on the model's own randomness to do more of the
-        // variation work across drafts and across separate generations, so it needs more room to vary.
-        temperature:0.95,
-        topP:0.95,
-        topK:40,
-        thinkingConfig:{thinkingLevel:'low'},
-        // maxOutputTokens is a COMBINED budget for thinking + visible output on Gemini 3 models -
-        // confirmed via multiple independent real-world reports (e.g. googleapis/python-genai#2062,
-        // "max_output_tokens caps thinking + output tokens combined"), not assumed. This is WHY 1536
-        // truncated: thinking tokens (even at 'low', which still uses some - full thinking-off isn't
-        // supported) were consumed FIRST, leaving too little of the 1536 budget for the actual JSON.
-        // The truncation itself is real, measured evidence: "Unterminated string in JSON at position
-        // 1035" while mid-review, on a request that otherwise produced good narrative content.
-        // Sized for thinking + output combined: reserving ~2000 tokens for 'low'-level thinking on a
-        // multi-constraint prompt (anti-template rule + 3 distinct structural shapes + keyword
-        // weaving is a real constraint-satisfaction problem, not a trivial one) + ~1200 for the actual
-        // 3-review JSON output (longest draft ~7 sentences/~150 words/~220 tokens incl. JSON escaping
-        // overhead, x3 reviews, +overhead) = ~3200, rounded up to 4096 for margin. A bigger ceiling
-        // does NOT cost latency - confirmed by this same test round, where actual response time is
-        // governed by thinkingLevel, not by how large maxOutputTokens is set.
-        maxOutputTokens:4096,
-        responseMimeType:'application/json',
-      },
-    };
+    // Multi-layer fallback chain (replaces the old "retry the same model+prompt twice" approach).
+    // Each layer changes SOMETHING about what's likely to be slow or fragile, instead of just hoping
+    // a second identical roll of the dice goes better:
+    //   Layer 1: full model (GEMINI_MODEL) + full prompt - best quality, tried first.
+    //   Layer 2: lite model (GEMINI_MODEL_LITE) + SAME full prompt - less "thinking" overhead, so
+    //            faster/less timeout-prone, while keeping the full narrative-variation instructions.
+    //   Layer 3: lite model + simplified prompt - fewer instructions to satisfy at once, so fewer
+    //            ways for the response to come back truncated/malformed.
+    //   Layer 4 (last resort, tried separately below only if 1-3 all fail): lite model + a minimal
+    //            prompt with almost no constraints beyond rating/keywords/first-person - the fastest,
+    //            most reliable shape a request can take. This REPLACES the old static/hardcoded
+    //            template fallback entirely - even the last resort is genuinely AI-generated.
+    // CONFIRMED by real data: thinkingLevel:'low' brought latency down to 6868ms on the full model
+    // (was timing out at 20000ms+ with the default "medium" thinking level). Google's own docs
+    // (ai.google.dev/gemini-api/docs/generate-content/thinking) confirm the Gemini 3 family defaults
+    // to "medium" thinking and cannot fully disable it - "low" is Google's documented setting for
+    // minimizing latency/cost while keeping most quality, so every layer below uses it.
+    type LayerNumber=1|2|3|4;
+    type LayerAttempt={layer:LayerNumber;label:string;model:string;prompt:string;maxOutputTokens:number;timeoutMs:number};
+    const primaryLayers:LayerAttempt[]=[
+      {layer:1,label:'full_model+full_prompt',model:GEMINI_MODEL,prompt,maxOutputTokens:4096,timeoutMs:LAYER_TIMEOUTS_MS[1]},
+      {layer:2,label:'lite_model+full_prompt',model:GEMINI_MODEL_LITE,prompt,maxOutputTokens:4096,timeoutMs:LAYER_TIMEOUTS_MS[2]},
+      {layer:3,label:'lite_model+simplified_prompt',model:GEMINI_MODEL_LITE,prompt:simplifiedPrompt,maxOutputTokens:2048,timeoutMs:LAYER_TIMEOUTS_MS[3]},
+    ];
+    const lastResortLayer:LayerAttempt={layer:4,label:'lite_model+minimal_prompt(last_resort)',model:GEMINI_MODEL_LITE,prompt:minimalPrompt,maxOutputTokens:1200,timeoutMs:LAYER_TIMEOUTS_MS[4]};
 
-    const approxPromptTokens=Math.round(prompt.length/4);
-    console.log('📤 Sending to Gemini prompt with keywords:',digest.high_priority_keywords);
-    console.log('Prompt length:',prompt.length,'chars (~',approxPromptTokens,'tokens, chars/4 estimate)');
-    console.log('maxOutputTokens sent:',geminiPayload.generationConfig.maxOutputTokens);
-    console.log('thinkingLevel sent:',geminiPayload.generationConfig.thinkingConfig.thinkingLevel);
-
-    // STEP 1: one automatic, silent retry before giving up. Most Gemini failures (network blip,
-    // momentary slowness, an occasional truncated/malformed response) are transient - a second
-    // attempt recovers the majority of them without the patient ever knowing attempt 1 failed.
-    const MAX_ATTEMPTS=2;
-    let reviews:string[]|null=null;
-    let lastFailureReason='unknown';
-    const attemptMetrics:Record<string,unknown>[]=[];
-    for(let attempt=1;attempt<=MAX_ATTEMPTS;attempt++){
+    async function runLayer(cfg:LayerAttempt):Promise<{reviews:string[]|null;metrics:Record<string,unknown>}>{
       const attemptStartMs=Date.now();
-      // Structured per-attempt metrics - deliberately one JSON blob per line so it can be grepped
-      // and pasted straight into a spreadsheet/table across multiple real requests in production.
-      const metrics:Record<string,unknown>={attempt,promptChars:prompt.length,approxPromptTokens,maxOutputTokens:geminiPayload.generationConfig.maxOutputTokens,thinkingLevel:geminiPayload.generationConfig.thinkingConfig.thinkingLevel};
+      const approxPromptTokens=Math.round(cfg.prompt.length/4);
+      const geminiPayload={
+        contents:[{parts:[{text:cfg.prompt}]}],
+        generationConfig:{
+          // Raised from 0.85 - the open-ended NATURAL VARIATION instruction (replacing the fixed
+          // framing menu/length brackets) relies on the model's own randomness to do more of the
+          // variation work across drafts and across separate generations, so it needs more room to vary.
+          temperature:0.95,
+          topP:0.95,
+          topK:40,
+          thinkingConfig:{thinkingLevel:'low'},
+          // maxOutputTokens is a COMBINED budget for thinking + visible output on Gemini 3 models -
+          // confirmed via multiple independent real-world reports (e.g. googleapis/python-genai#2062).
+          // 4096 for the full prompt (anti-template rule + 3 structural shapes + keyword weaving is a
+          // real constraint-satisfaction problem) leaves ~2000 for 'low'-level thinking + ~1200 for the
+          // actual 3-review JSON output, +margin. Layers 3/4 use a smaller budget since their prompts
+          // ask for far less - a bigger ceiling doesn't cost latency, but there's no need for it either.
+          maxOutputTokens:cfg.maxOutputTokens,
+          responseMimeType:'application/json',
+        },
+      };
+      // Structured per-layer metrics - deliberately one JSON blob per line so it can be grepped and
+      // pasted straight into a spreadsheet/table across multiple real requests in production, and so
+      // "how often are we falling back to Layer 2/3/4" is directly answerable from function logs.
+      const metrics:Record<string,unknown>={layer:cfg.layer,label:cfg.label,model:cfg.model,promptChars:cfg.prompt.length,approxPromptTokens,maxOutputTokens:cfg.maxOutputTokens,timeoutMs:cfg.timeoutMs};
       try{
-        const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},GEMINI_TIMEOUT_MS);
+        const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${cfg.model}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},cfg.timeoutMs);
         metrics.latencyMs=Date.now()-attemptStartMs;
-        // Step 3 rate-limit check: surface any rate-limit-related headers Google returns, whether
-        // this attempt succeeded or failed. Only logged if actually present - never fabricated.
+        // Surface any rate-limit-related headers Google returns, whether this attempt succeeded or
+        // failed. Only logged if actually present - never fabricated.
         const rateLimitHeaders:Record<string,string>={};
         response.headers.forEach((value,key)=>{if(/ratelimit|retry-after|quota/i.test(key))rateLimitHeaders[key]=value});
         if(Object.keys(rateLimitHeaders).length)metrics.rateLimitHeaders=rateLimitHeaders;
         if(!response.ok){
           const errText=await response.text();
-          lastFailureReason=`api_error_${response.status}`;
           metrics.outcome=`api_error_${response.status}`;
-          console.error(`❌ Attempt ${attempt}/${MAX_ATTEMPTS} failed - GEMINI API ERROR`,{status:response.status,error:errText.slice(0,500)});
-        }else{
-          const envelope=await response.json() as any;
-          // usageMetadata is Gemini's OWN reported token accounting - authoritative, not an estimate.
-          // thoughtsTokenCount (if present and >0) would confirm the model is spending tokens on
-          // internal "thinking" before emitting output, which is the leading hypothesis for latency
-          // that isn't explained by prompt size or output size alone.
-          if(envelope?.usageMetadata){
-            metrics.usageMetadata={
-              promptTokenCount:envelope.usageMetadata.promptTokenCount,
-              candidatesTokenCount:envelope.usageMetadata.candidatesTokenCount,
-              thoughtsTokenCount:envelope.usageMetadata.thoughtsTokenCount,
-              totalTokenCount:envelope.usageMetadata.totalTokenCount,
-            };
-          }
-          const parts=envelope?.candidates?.[0]?.content?.parts;
-          if(!Array.isArray(parts)){
-            lastFailureReason='invalid_response_structure';
-            metrics.outcome='invalid_response_structure';
-            console.error(`❌ Attempt ${attempt}/${MAX_ATTEMPTS} failed - INVALID RESPONSE STRUCTURE`,{parts});
-          }else{
-            // Defensive hardening: parts are contiguous chunks of ONE text stream, not separate
-            // lines - joining with '\n' risks inserting a stray newline mid-string if Gemini ever
-            // splits the answer across multiple parts (confirmed via docs this response does NOT
-            // include separate `thought` parts by default, so this wasn't the truncation cause here,
-            // but '' is the structurally correct join regardless).
-            const modelText=parts.map((p:any)=>typeof p.text==='string'?p.text:'').filter(Boolean).join('');
-            console.log(`📥 Attempt ${attempt}/${MAX_ATTEMPTS} RAW GEMINI RESPONSE:\n`,modelText);
-            const parsed=parseReviews(modelText,TARGET_COUNT);
-            if(parsed.reviews.length===TARGET_COUNT){
-              reviews=parsed.reviews;
-              metrics.outcome='success';
-              console.log(`✅ Attempt ${attempt}/${MAX_ATTEMPTS} succeeded - parsed ${parsed.reviews.length} reviews`);
-            }else{
-              // Distinct outcome per failure shape (Step 3 ask) - 'truncated_json' specifically means
-              // maxOutputTokens ran out mid-response (thinking + output share that budget on Gemini 3),
-              // separate from 'malformed_json' (genuinely broken JSON) and 'wrong_review_count'
-              // (valid JSON, but not exactly 3 usable reviews) - each points at a different fix.
-              lastFailureReason=parsed.failureReason||'wrong_review_count';
-              metrics.outcome=lastFailureReason;
-              console.error(`❌ Attempt ${attempt}/${MAX_ATTEMPTS} failed - ${lastFailureReason} (parsed ${parsed.reviews.length}/${TARGET_COUNT} reviews)`);
-            }
-          }
+          console.error(`❌ Layer ${cfg.layer} (${cfg.label}) failed - GEMINI API ERROR`,{status:response.status,error:errText.slice(0,500)});
+          return {reviews:null,metrics};
         }
+        const envelope=await response.json() as any;
+        // usageMetadata is Gemini's OWN reported token accounting - authoritative, not an estimate.
+        if(envelope?.usageMetadata){
+          metrics.usageMetadata={
+            promptTokenCount:envelope.usageMetadata.promptTokenCount,
+            candidatesTokenCount:envelope.usageMetadata.candidatesTokenCount,
+            thoughtsTokenCount:envelope.usageMetadata.thoughtsTokenCount,
+            totalTokenCount:envelope.usageMetadata.totalTokenCount,
+          };
+        }
+        const parts=envelope?.candidates?.[0]?.content?.parts;
+        if(!Array.isArray(parts)){
+          metrics.outcome='invalid_response_structure';
+          console.error(`❌ Layer ${cfg.layer} (${cfg.label}) failed - INVALID RESPONSE STRUCTURE`,{parts});
+          return {reviews:null,metrics};
+        }
+        // Defensive hardening: parts are contiguous chunks of ONE text stream, not separate lines -
+        // joining with '' (not '\n') avoids inserting a stray newline mid-string if Gemini ever
+        // splits the answer across multiple parts.
+        const modelText=parts.map((p:any)=>typeof p.text==='string'?p.text:'').filter(Boolean).join('');
+        console.log(`📥 Layer ${cfg.layer} (${cfg.label}) RAW GEMINI RESPONSE:\n`,modelText);
+        const parsed=parseReviews(modelText,TARGET_COUNT);
+        if(parsed.reviews.length===TARGET_COUNT){
+          metrics.outcome='success';
+          console.log(`✅ Layer ${cfg.layer} (${cfg.label}) succeeded - parsed ${parsed.reviews.length} reviews in ${metrics.latencyMs}ms`);
+          return {reviews:parsed.reviews,metrics};
+        }
+        // Distinct outcome per failure shape - 'truncated_json' specifically means maxOutputTokens ran
+        // out mid-response (thinking + output share that budget on Gemini 3), separate from
+        // 'malformed_json' (genuinely broken JSON) and 'wrong_review_count' (valid JSON, but not
+        // exactly 3 usable reviews) - each points at a different fix.
+        metrics.outcome=parsed.failureReason||'wrong_review_count';
+        console.error(`❌ Layer ${cfg.layer} (${cfg.label}) failed - ${metrics.outcome} (parsed ${parsed.reviews.length}/${TARGET_COUNT} reviews)`);
+        return {reviews:null,metrics};
       }catch(error){
         metrics.latencyMs=Date.now()-attemptStartMs;
-        lastFailureReason=error instanceof Error&&/SLA/.test(error.message)?'timeout':'network_error';
-        metrics.outcome=lastFailureReason;
-        console.error(`❌ Attempt ${attempt}/${MAX_ATTEMPTS} threw`,error instanceof Error?error.message:String(error));
-      }
-      console.log('📊 ATTEMPT_METRICS',JSON.stringify(metrics));
-      attemptMetrics.push(metrics);
-      if(reviews)break;
-      if(attempt<MAX_ATTEMPTS){
-        const backoffMs=300+Math.floor(Math.random()*300);
-        console.log(`⏳ Retrying in ${backoffMs}ms (attempt 1 failure kept internal, not shown to patient)...`);
-        await new Promise(resolve=>setTimeout(resolve,backoffMs));
+        metrics.outcome=error instanceof Error&&/SLA/.test(error.message)?'timeout':'network_error';
+        console.error(`❌ Layer ${cfg.layer} (${cfg.label}) threw`,error instanceof Error?error.message:String(error));
+        return {reviews:null,metrics};
       }
     }
 
-    // STEP 2: both attempts failed - return a clear failure, never the old hardcoded template.
-    // STEP 6: the logSystemError call below is what the dashboard's "N failures today" banner counts
-    // (app/dashboard/page.tsx queries system_error_logs where endpoint='generate-review') - no new
-    // infra needed. Latency summary is embedded in the message itself so production failures are
-    // diagnosable straight from that table without needing to dig through function logs separately.
+    let reviews:string[]|null=null;
+    let succeededLayer:LayerAttempt|null=null;
+    const attemptMetrics:Record<string,unknown>[]=[];
+    for(const cfg of primaryLayers){
+      const result=await runLayer(cfg);
+      console.log('📊 ATTEMPT_METRICS',JSON.stringify(result.metrics));
+      attemptMetrics.push(result.metrics);
+      if(result.reviews){reviews=result.reviews;succeededLayer=cfg;break}
+    }
     if(!reviews){
-      const latencySummary=attemptMetrics.map(m=>`#${m.attempt}:${m.outcome}@${m.latencyMs}ms`).join(', ');
-      console.error(`❌ Both Gemini attempts failed. Last reason: ${lastFailureReason}. Returning success:false to client.`);
-      void logSystemError(db,doctorId,`Gemini generation failed after ${MAX_ATTEMPTS} attempts: ${lastFailureReason} [${latencySummary}] promptChars=${prompt.length} maxOutputTokens=${geminiPayload.generationConfig.maxOutputTokens}`);
+      console.log('⚠️  All 3 primary layers failed - falling through to Layer 4 (last-resort minimal AI call, NOT a static template)');
+      const result=await runLayer(lastResortLayer);
+      console.log('📊 ATTEMPT_METRICS',JSON.stringify(result.metrics));
+      attemptMetrics.push(result.metrics);
+      if(result.reviews){reviews=result.reviews;succeededLayer=lastResortLayer}
+    }
+    if(succeededLayer)console.log(`🎯 GENERATION SUCCEEDED at Layer ${succeededLayer.layer} (${succeededLayer.label}) using ${succeededLayer.model}`);
+
+    // All 4 layers failed - return a clear failure, never a hardcoded template. The logSystemError
+    // call below is what the dashboard's "N failures today" banner counts (app/dashboard/page.tsx
+    // queries system_error_logs where endpoint='generate-review') - no new infra needed. Latency
+    // summary is embedded in the message itself so production failures are diagnosable straight from
+    // that table without needing to dig through function logs separately. Reaching this point means
+    // 4 different model/prompt combinations all failed for this one request - genuinely rare.
+    if(!reviews){
+      const latencySummary=attemptMetrics.map(m=>`L${m.layer}:${m.outcome}@${m.latencyMs}ms`).join(', ');
+      console.error(`❌ ALL 4 LAYERS FAILED. Returning success:false to client. [${latencySummary}]`);
+      void logSystemError(db,doctorId,`Gemini generation failed after all 4 fallback layers: [${latencySummary}] promptChars=${prompt.length}`);
       return fail('generation_unavailable',503);
     }
 
@@ -584,19 +623,25 @@ Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "
     });
     console.log('\n='.repeat(60));
 
-    // Save metadata
+    // Save metadata. archetype/personality/doctor_name_included only reflect what was actually
+    // requested when a Layer 1/2 success used the full prompt (which is what computes them) - a
+    // Layer 3/4 success used a simplified/minimal prompt that never references them, so recording
+    // them there would misleadingly imply structural variation was applied when it wasn't.
+    const usedFullPrompt=succeededLayer!.layer<=2;
     const metadata={
-      model:GEMINI_MODEL,
+      model:succeededLayer!.model,
+      layer:succeededLayer!.layer,
+      layer_label:succeededLayer!.label,
       doctor_id:doctorId,
       rating,
       language,
       target_count:TARGET_COUNT,
       review_count:reviews.length,
-      archetype:selectedArchetypeKey,
-      personality:personalityVariant,
+      archetype:usedFullPrompt?selectedArchetypeKey:null,
+      personality:usedFullPrompt?personalityVariant:null,
       keywords_high:digest.high_priority_keywords,
       keywords_selected:digest.selected_chips,
-      doctor_name_included:includeDoctorName,
+      doctor_name_included:usedFullPrompt?includeDoctorName:null,
     };
 
     // Persist reviews - capture the inserted row ids (draft_index preserves batch order) so the

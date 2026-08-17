@@ -140,6 +140,11 @@ export function ReviewExperience({
   const autoGenerationKeyRef = useRef("");
   // Tracks touch position for the drafts carousel's swipe gesture (layout/navigation only).
   const touchStartXRef = useRef<number | null>(null);
+  // Speculative pre-fetch (UX optimization only, NOT the "real" request - see startSpeculativeGeneration
+  // and generate() below): holds the in-flight/completed background generation started the moment the
+  // patient picks a rating, plus the exact (rating, chips) key it was generated for, so generate() can
+  // tell a moment later whether the patient's actual chip selection matches this guess.
+  const speculativeRef = useRef<{ key: string; controller: AbortController; promise: Promise<{ reviews: { id: string | null; content: string }[]; quality: Record<string, unknown> } | null> } | null>(null);
 
   const t = currentLanguage ? copy[currentLanguage] : copy.english;
   const doctorName = titleCase(doctor.doctor_name.replace(/^dr\.?\s*/i, ""));
@@ -253,6 +258,9 @@ export function ReviewExperience({
     setHoverRating(null);
     setSelectedRating(value);
     setValidationError("");
+    // Kick off the speculative background pre-fetch the moment the rating is picked - see
+    // startSpeculativeGeneration for why this is safe to start before chips are even chosen.
+    startSpeculativeGeneration(value);
     // Auto-advance to the chips step - no separate "Next" tap needed. Brief pause so the star-fill
     // animation is visible before the screen changes.
     window.setTimeout(() => goToStep(2), 300);
@@ -296,38 +304,45 @@ export function ReviewExperience({
     if (deltaX < 0) nextDraft(); else prevDraft();
   }
 
-  async function generate(ratingOverride: number, chips: string[]) {
-    if (!currentLanguage || loading) return;
-    setLoading(true);
-    setValidationError("");
-    setGenerationFailed(false);
-    setReviews([]);
+  // Normalizes a (rating, chips) pair into a comparable string so the speculative pre-fetch and the
+  // real generate() call can tell whether they're asking for the same thing - order-independent
+  // (sorted) since chip selection order doesn't change what gets generated.
+  function speculativeKey(ratingArg: number, chipsArg: string[]) {
+    return `${ratingArg}:${[...chipsArg].map((chip) => chip.trim().toLowerCase()).filter(Boolean).sort().join("|")}`;
+  }
+
+  // Shared network call used by both the real (UI-facing) generation and the speculative background
+  // pre-fetch below - returns the parsed result on success, null on a handled failure (backend said
+  // success:false, or the response didn't parse into exactly 3 reviews), and throws on abort/network
+  // errors so callers can tell "cancelled" apart from "genuinely failed".
+  async function fetchGeneration(ratingArg: number, chipsArg: string[], controller: AbortController) {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!supabaseUrl || !anonKey) throw new Error("Review generation is not configured.");
     const token = deviceToken || crypto.randomUUID();
     if (!deviceToken) setDeviceToken(token);
+    // 22s comfortably covers the backend's own worst-case chain of 4 fallback layers (~17-19s) with
+    // margin, whether this call is the real request or a speculative one running in the background.
+    const timeout = window.setTimeout(() => controller.abort(), 22000);
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-      if (!supabaseUrl || !anonKey) throw new Error("Review generation is not configured.");
-      const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 20000); // 20 seconds (allows for DB queries + Gemini + one internal retry)
       const response = await fetch(`${supabaseUrl.replace(/\/$/, "")}/functions/v1/generate-review`, {
         method: "POST",
         headers: { "Content-Type": "application/json", apikey: anonKey, Authorization: `Bearer ${anonKey}` },
         body: JSON.stringify({
           doctor_id: doctor.id,
-          scan_id: analyticsScanId,
-          selected_chips: chips,
-          selected_keywords: chips,
-          selected_experiences: chips,
-          selected_chip: chips[0],
-          rating: ratingOverride,
+          scan_id: analyticsScanIdRef.current,
+          selected_chips: chipsArg,
+          selected_keywords: chipsArg,
+          selected_experiences: chipsArg,
+          selected_chip: chipsArg[0],
+          rating: ratingArg,
           custom_notes: sanitizeText(customNotes, 240) || null,
           language: currentLanguage,
           device_token: token,
           ...(patientLocation || {}),
         }),
         signal: controller.signal,
-      }).finally(() => window.clearTimeout(timeout));
+      });
       const responseText = await response.text();
       if (!response.ok) console.error("generate-review non-ok response", { status: response.status, body: responseText });
       let data: Record<string, unknown> = {};
@@ -342,14 +357,82 @@ export function ReviewExperience({
           .filter((review) => review.content.length > 0)
           .slice(0, 3)
         : [];
-      // Backend contract: {success:true, reviews:[...]} on real AI output, {success:false, error} on
-      // any failure (Gemini down, both retries exhausted, bad request, etc). Never trust a partial
-      // or malformed payload as a success - if it isn't explicitly success:true with 3 reviews, treat
-      // it as a failure and show the "try again" state rather than guessing at fallback text.
+      // Backend contract: {success:true, reviews:[...]} on real AI output (now the result of up to 4
+      // internal fallback layers - see generate-review/index.ts), {success:false, error} only if every
+      // layer failed. Never trust a partial or malformed payload as a success - if it isn't explicitly
+      // success:true with 3 reviews, treat it as a failure and show the "try again" state.
       if (response.ok && data.success === true && returned.length === 3) {
         const quality = data.quality && typeof data.quality === "object" ? data.quality as Record<string, unknown> : {};
-        setReviewRating(typeof quality.generated_rating === "number" ? quality.generated_rating : ratingOverride);
-        setReviews(returned);
+        return { reviews: returned, quality };
+      }
+      return null;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  // Speculative pre-fetch (UX optimization only - NOT the "real" request; see generate() below for
+  // where its result actually gets used). Fires the moment the patient picks a rating, i.e. before
+  // they've even seen the chips step - selectedChips is always empty at that point in this flow, so
+  // this uses the clinic's first configured keyword chips as a best-guess placeholder for what the
+  // patient is likely to pick next. If their actual chip selection ends up matching this guess,
+  // generate() reuses this in-flight/completed call directly instead of starting a fresh one - by the
+  // time the patient finishes tapping through 2 chips, generation has already had a head start (often
+  // the full round trip) hidden behind their own selection time, rather than starting cold on step 3.
+  function startSpeculativeGeneration(ratingArg: number) {
+    if (!currentLanguage) return;
+    const placeholderChips = chipOptions.slice(0, 2);
+    if (!placeholderChips.length) return;
+    const key = speculativeKey(ratingArg, placeholderChips);
+    if (speculativeRef.current?.key === key) return; // already running/cached for this exact guess
+    speculativeRef.current?.controller.abort(); // superseded by a new rating pick - stop the old guess
+    const controller = new AbortController();
+    console.log("🔮 SPECULATIVE pre-fetch started", { rating: ratingArg, placeholderChips });
+    const promise = fetchGeneration(ratingArg, placeholderChips, controller)
+      .then((result) => {
+        console.log(result ? "🔮 SPECULATIVE pre-fetch resolved (ready if the patient's final selection matches)" : "🔮 SPECULATIVE pre-fetch returned no usable result");
+        return result;
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) console.log("🔮 SPECULATIVE pre-fetch aborted (superseded or selections diverged)");
+        else console.error("🔮 SPECULATIVE pre-fetch failed", error);
+        return null;
+      });
+    speculativeRef.current = { key, controller, promise };
+  }
+
+  async function generate(ratingOverride: number, chips: string[]) {
+    if (!currentLanguage || loading) return;
+    setLoading(true);
+    setValidationError("");
+    setGenerationFailed(false);
+    setReviews([]);
+    const key = speculativeKey(ratingOverride, chips);
+    const speculative = speculativeRef.current;
+    try {
+      let result: { reviews: { id: string | null; content: string }[]; quality: Record<string, unknown> } | null;
+      if (speculative && speculative.key === key) {
+        // Speculative hit: the patient's actual selection matches what the background pre-fetch
+        // already guessed - reuse it instead of firing a second, duplicate request. If it's still
+        // in-flight this just waits for it (with a head start); if it already resolved, this returns
+        // instantly.
+        console.log("🎯 SPECULATIVE HIT - reusing pre-fetched generation, no duplicate API call");
+        speculativeRef.current = null;
+        result = await speculative.promise;
+      } else {
+        if (speculative) {
+          // Speculative miss: the patient picked different chips than the placeholder guess used -
+          // abort the now-irrelevant background call cleanly rather than letting it run to completion
+          // for nothing, and fire the real request with their actual selection.
+          console.log("🗑️ SPECULATIVE MISS - final selection differs from the pre-fetch guess, aborting it and firing the real request", { guessKey: speculative.key, actualKey: key });
+          speculative.controller.abort();
+          speculativeRef.current = null;
+        }
+        result = await fetchGeneration(ratingOverride, chips, new AbortController());
+      }
+      if (result) {
+        setReviewRating(typeof result.quality.generated_rating === "number" ? result.quality.generated_rating as number : ratingOverride);
+        setReviews(result.reviews);
         setActiveDraft(0);
         setGenerationFailed(false);
         const supabase = createClient();
