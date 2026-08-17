@@ -1,9 +1,9 @@
 "use client";
 
-import type { CSSProperties } from "react";
+import type { CSSProperties, TouchEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { Check, Clipboard, ExternalLink, Loader2, RefreshCw, Sparkles } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Clipboard, ExternalLink, Loader2, RefreshCw, Sparkles } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
 type Language = "english" | "hinglish";
@@ -109,6 +109,9 @@ export function ReviewExperience({
   // Each draft's own generated_reviews.id (nullable - persistence can fail without blocking the
   // patient's review, in which case copy-selection just can't be tracked for that one draft).
   const [reviews, setReviews] = useState<{ id: string | null; content: string }[]>([]);
+  // Which of the 3 drafts the carousel is currently showing - layout/navigation state only, does
+  // not touch review-generation logic or content.
+  const [activeDraft, setActiveDraft] = useState(0);
   const [reviewRating, setReviewRating] = useState(5);
   const [selectedRating, setSelectedRating] = useState<number | null>(null);
   const [hoverRating, setHoverRating] = useState<number | null>(null);
@@ -133,9 +136,10 @@ export function ReviewExperience({
   const scanInitializedRef = useRef(false);
   const draftsSectionRef = useRef<HTMLElement | null>(null);
   // Guards the chips->drafts auto-advance below so it fires exactly once per unique chip
-  // combination, not on every re-render or every time selectedChips happens to still equal 2
-  // (e.g. after using Back to return to the chips step).
+  // combination, not on every re-render.
   const autoGenerationKeyRef = useRef("");
+  // Tracks touch position for the drafts carousel's swipe gesture (layout/navigation only).
+  const touchStartXRef = useRef<number | null>(null);
 
   const t = currentLanguage ? copy[currentLanguage] : copy.english;
   const doctorName = titleCase(doctor.doctor_name.replace(/^dr\.?\s*/i, ""));
@@ -270,6 +274,28 @@ export function ReviewExperience({
     void generate(selectedRating ?? 0, chips);
   }
 
+  // Drafts carousel navigation - one review draft visible at a time instead of all 3 stacked, so
+  // the fixed-height card never needs the page to scroll to compare/choose a draft. Clamped (no
+  // wraparound) so the dot indicator always matches the visible draft unambiguously.
+  function goToDraft(index: number) {
+    setActiveDraft(Math.max(0, Math.min(reviews.length - 1, index)));
+  }
+  function nextDraft() { goToDraft(activeDraft + 1); }
+  function prevDraft() { goToDraft(activeDraft - 1); }
+  function handleDraftTouchStart(event: TouchEvent) {
+    touchStartXRef.current = event.touches[0]?.clientX ?? null;
+  }
+  function handleDraftTouchEnd(event: TouchEvent) {
+    const startX = touchStartXRef.current;
+    touchStartXRef.current = null;
+    if (startX === null) return;
+    const endX = event.changedTouches[0]?.clientX;
+    if (endX === undefined) return;
+    const deltaX = endX - startX;
+    if (Math.abs(deltaX) < 40) return; // ignore small taps/jitter
+    if (deltaX < 0) nextDraft(); else prevDraft();
+  }
+
   async function generate(ratingOverride: number, chips: string[]) {
     if (!currentLanguage || loading) return;
     setLoading(true);
@@ -324,6 +350,7 @@ export function ReviewExperience({
         const quality = data.quality && typeof data.quality === "object" ? data.quality as Record<string, unknown> : {};
         setReviewRating(typeof quality.generated_rating === "number" ? quality.generated_rating : ratingOverride);
         setReviews(returned);
+        setActiveDraft(0);
         setGenerationFailed(false);
         const supabase = createClient();
         if (supabase && analyticsScanIdRef.current) void supabase.functions.invoke("mark-scan", { body: { scan_id: analyticsScanIdRef.current, event: "generated" } });
@@ -390,33 +417,90 @@ export function ReviewExperience({
     if (supabase && analyticsScanIdRef.current) void supabase.functions.invoke("mark-scan", { body: { scan_id: analyticsScanIdRef.current, event: "posted" } });
   }
 
-  const BrandHeader = () => <a href="/" className="relative z-50 mx-auto flex min-h-10 w-full max-w-xl flex-nowrap items-center justify-center gap-0.5 overflow-hidden whitespace-nowrap rounded-xl border border-slate-200 bg-white px-1.5 text-xs font-black shadow-sm sm:min-h-14 sm:gap-1 sm:px-3 sm:rounded-2xl sm:text-base"><span className="text-[#0A4C95]">MediRank</span><span className="text-slate-700">by</span><span className="text-[#0A4C95]">Vyapar</span><span className="text-[#F37021]">Wallah</span><ExternalLink size={12} className="ml-0.5 shrink-0 text-slate-500 sm:size-[14px]" /></a>;
-  const BrandFooter = () => <footer className="relative z-50 px-4 py-3 text-center text-xs font-black text-slate-900 sm:px-5 sm:py-6 sm:text-sm"><a href="https://www.vyaparwallah.com/digital-marketing-for-doctors" target="_blank" rel="noreferrer" className="inline-flex min-h-9 max-w-full items-center gap-0.5 overflow-hidden rounded-lg bg-white px-2.5 shadow-sm ring-1 ring-slate-200 sm:min-h-12 sm:gap-1 sm:px-4 sm:rounded-xl"><span>Powered by</span><span className="text-[#0A4C95]">Vyapar</span><span className="text-[#F37021]">Wallah</span></a></footer>;
+  // Compact sizing (smaller min-height/padding than before) so BrandHeader + the fixed card +
+  // BrandFooter together always fit within one viewport height with no page-level scroll - text
+  // content is unchanged, only the box dimensions around it.
+  const BrandHeader = () => <a href="/" className="relative z-50 mx-auto flex min-h-8 w-full max-w-xl flex-nowrap items-center justify-center gap-0.5 overflow-hidden whitespace-nowrap rounded-xl border border-slate-200 bg-white px-1.5 text-[11px] font-black shadow-sm sm:min-h-11 sm:gap-1 sm:px-3 sm:rounded-2xl sm:text-sm"><span className="text-[#0A4C95]">MediRank</span><span className="text-slate-700">by</span><span className="text-[#0A4C95]">Vyapar</span><span className="text-[#F37021]">Wallah</span><ExternalLink size={11} className="ml-0.5 shrink-0 text-slate-500 sm:size-[13px]" /></a>;
+  const BrandFooter = () => <footer className="relative z-50 px-4 py-1.5 text-center text-[11px] font-black text-slate-900 sm:px-5 sm:py-2.5 sm:text-xs"><a href="https://www.vyaparwallah.com/digital-marketing-for-doctors" target="_blank" rel="noreferrer" className="inline-flex min-h-7 max-w-full items-center gap-0.5 overflow-hidden rounded-lg bg-white px-2.5 shadow-sm ring-1 ring-slate-200 sm:min-h-9 sm:gap-1 sm:px-4 sm:rounded-xl"><span>Powered by</span><span className="text-[#0A4C95]">Vyapar</span><span className="text-[#F37021]">Wallah</span></a></footer>;
   const GoogleStar = ({ active, size = 34 }: { active: boolean; size?: number }) => <svg aria-hidden="true" viewBox="0 0 24 24" width={size} height={size} className="block transition-transform duration-75 ease-out group-active:scale-90"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" fill={active ? "#F4B400" : "transparent"} stroke={active ? "#F4B400" : "#B8C0CC"} strokeWidth="1.8" strokeLinejoin="round" /></svg>;
   // Step indicator dots - shown on every screen (including the language picker, which is always
   // step 1 when it's shown at all) so the patient always knows how much of the flow is left.
   const StepDots = ({ current }: { current: number }) => <div className="flex items-center justify-center gap-1.5" role="status"><span className="sr-only">{t.stepOf(current, totalSteps)}</span>{Array.from({ length: totalSteps }).map((_, index) => <span key={index} aria-hidden="true" className={`h-1.5 rounded-full transition-all ${index + 1 === current ? "w-6 bg-[#0A4C95]" : "w-1.5 bg-slate-200"}`} />)}</div>;
 
-  if (!currentLanguage) return <main style={style} className="flex min-h-[100dvh] flex-col bg-[var(--patient-bg)] px-4 pt-4 text-slate-950 sm:px-5 sm:pt-5"><BrandHeader /><div className="mt-4 sm:mt-5"><StepDots current={1} /></div><div className="grid flex-1 place-items-center py-3 sm:py-8"><section className="w-full max-w-sm rounded-3xl border border-blue-100 bg-white p-4 text-center shadow-2xl sm:rounded-[2rem] sm:max-w-md sm:p-8"><img src="/medirank-logo.png" alt="MediRank" className="mx-auto h-12 w-12 rounded-2xl object-contain ring-1 ring-slate-200 sm:h-16 sm:w-16" /><p className="mt-3 text-xs font-black uppercase tracking-[.12em] text-[#0A4C95] sm:mt-5 sm:tracking-[.2em]">MediRank</p><h1 className="mt-2 text-xl font-black leading-tight sm:text-3xl">{t.chooseLanguage}</h1><p className="mt-2 text-xs font-semibold leading-5 text-slate-700 sm:mt-3 sm:text-base sm:leading-6">{t.languageHint}</p><div className="mt-5 grid gap-2 sm:mt-7 sm:gap-3"><button type="button" onClick={() => setCurrentLanguage("english")} className="min-h-12 rounded-2xl border-2 border-[#0A4C95] bg-white text-sm font-black text-slate-950 shadow-md transition active:scale-[.98] sm:min-h-16 sm:text-lg">English</button><button type="button" onClick={() => setCurrentLanguage("hinglish")} className="min-h-12 rounded-2xl bg-[#0A4C95] text-sm font-black text-white shadow-lg transition active:scale-[.98] sm:min-h-16 sm:text-lg">Hinglish</button></div></section></div><BrandFooter /></main>;
-
-  return <main style={style} className="min-h-[100dvh] overflow-x-hidden bg-white pb-12 text-slate-950 sm:pb-14">
-    <div className="relative z-50 px-4 pt-4 sm:px-5 sm:pt-5"><BrandHeader /></div>
-    <div className="mx-auto w-full max-w-xl space-y-5 px-4 pt-4 sm:space-y-6 sm:px-5 sm:pt-6">
-      <header className="relative z-30 bg-white py-4 text-center sm:py-6">{doctor.logo_url ? <img src={doctor.logo_url} alt={clinicName} className="mx-auto h-13 w-13 rounded-xl object-contain ring-1 ring-slate-200 sm:h-16 sm:w-16" /> : <span className="mx-auto grid h-13 w-13 place-items-center rounded-xl bg-[#0A4C95] text-lg font-black text-white sm:h-16 sm:w-16 sm:text-xl">{initials}</span>}<p className="mt-3 break-words text-xs font-black text-[#0A4C95] sm:mt-4 sm:text-sm">{clinicName}</p><h1 className="mt-3 text-lg font-black leading-snug sm:mt-4 sm:text-2xl sm:leading-relaxed">{visitQuestion}</h1>{allowLanguageStep && <button type="button" onClick={() => setCurrentLanguage(null)} className="mt-4 min-h-10 px-3 text-xs font-bold text-[#0A4C95] transition hover:bg-blue-50 sm:mt-5 sm:min-h-12 sm:text-sm">{currentLanguage === "english" ? "English" : "Hinglish"}</button>}</header>
-
-      <StepDots current={stepNumber} />
-
-      {/* STEP 1: rating - only this section is visible, no long stacked-scroll form */}
-      {step === 1 && <section className="relative z-30 bg-white py-2 sm:py-4"><div className="text-center"><p className="text-xs font-black uppercase tracking-[.12em] text-[#0A4C95] sm:tracking-[.18em]">{t.ratingStepTitle} <span className="text-red-600">*</span></p><div className="mt-5 flex justify-center gap-2 sm:mt-6 sm:gap-3" role="radiogroup" aria-label="Select star rating" onMouseLeave={() => setHoverRating(null)}>{Array.from({ length: 5 }).map((_, index) => { const value = index + 1; const previewRating = hoverRating ?? selectedRating ?? 0; return <button key={value} type="button" role="radio" aria-checked={selectedRating === value} onMouseEnter={() => { if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) setHoverRating(value); }} onFocus={() => setHoverRating(value)} onBlur={() => setHoverRating(null)} onTouchStart={(event) => { event.preventDefault(); selectRating(value); }} onClick={() => selectRating(value)} className="group grid h-12 w-12 touch-manipulation place-items-center rounded-full transition-colors duration-75 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4285F4] active:bg-slate-200 sm:h-14 sm:w-14 sm:hover:bg-slate-100"><GoogleStar active={value <= previewRating} size={36} /></button>; })}</div><p className="mt-4 min-h-6 text-xs font-extrabold text-slate-700 sm:mt-5 sm:text-sm">{selectedRating ? selectedRating >= 5 ? "Loved it" : selectedRating === 4 ? "Good, with small feedback" : "Needs improvement" : "Select your rating"}</p></div>{validationError && <p className="mt-5 rounded-xl bg-red-50 px-4 py-3 text-xs font-black text-red-700 sm:mt-6 sm:px-5 sm:py-3.5 sm:text-sm">{validationError}</p>}</section>}
-
-      {/* STEP 2: highlight chips */}
-      {step === 2 && <section className="relative z-30 bg-white py-2 sm:py-4"><div className="flex items-center justify-between gap-3 sm:gap-4"><div className="min-w-0"><h2 className="text-base font-black sm:text-xl">{t.chipsTitle}</h2><p className="mt-1 text-xs font-bold leading-4 text-slate-500 sm:mt-1.5 sm:leading-5">{t.chipsHint}</p></div><span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-[#0A4C95] sm:px-3 sm:py-1.5">{selectedChips.length}/{MIN_DETAIL_CHIPS}</span></div><div className="mt-4 grid grid-cols-1 gap-2.5 min-[360px]:grid-cols-2 sm:mt-5 sm:gap-3">{chipOptions.map((value) => <button key={value} type="button" aria-pressed={selectedChips.includes(value)} onClick={() => toggleChip(value)} className={`min-h-12 rounded-xl border-2 px-3 py-2.5 text-left text-xs font-black leading-4 transition active:scale-[.98] sm:min-h-14 sm:rounded-2xl sm:px-4 sm:py-3 sm:text-sm sm:leading-5 ${selectedChips.includes(value) ? "border-[#0A4C95] bg-blue-50 text-[#0A4C95] shadow-md" : "border-slate-200 bg-white text-slate-950 shadow-sm"}`}><span className="flex min-w-0 items-center gap-2 break-words">{selectedChips.includes(value) && <Check size={16} className="shrink-0 sm:size-[17px]" />}{value}</span></button>)}</div>{validationError && <p className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-xs font-black text-red-700 sm:mt-5 sm:px-5 sm:py-3.5 sm:text-sm">{validationError}</p>}<p className="mt-2 text-center text-xs font-bold text-slate-400 sm:text-sm">{t.minChips}</p><button type="button" onClick={() => goToStep(1)} className="mt-6 min-h-12 w-full rounded-2xl border-2 border-slate-200 bg-white text-sm font-black text-slate-700 transition active:scale-[.98] sm:mt-8 sm:min-h-14 sm:text-base">{t.back}</button></section>}
-
-      {/* STEP 3: loading -> drafts. This step can scroll internally (3 full reviews won't fit one
-          screen) - steps 1-2 above never need scrolling since only one is ever rendered. */}
-      {step === 3 && <section ref={draftsSectionRef} className="relative z-30 bg-white py-2 sm:py-4">{!loading && <div className="flex items-start justify-between gap-3 sm:gap-4"><div className="min-w-0"><h2 className="text-base font-black sm:text-xl">{t.draftsTitle}</h2>{selectedChips.length > 0 && <p className="mt-1.5 break-words text-xs font-bold leading-4 text-slate-500 sm:mt-2 sm:text-sm sm:leading-5">{selectedChips.join(", ")} - {reviewRating} star tone</p>}</div></div>}{loading ? <div className="flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-blue-100 bg-blue-50/40 px-4 py-10 text-center sm:py-14" aria-live="polite"><span className="grid h-14 w-14 place-items-center rounded-2xl bg-[#0A4C95] text-white shadow-lg sm:h-16 sm:w-16"><Sparkles size={26} className="animate-pulse" /></span><div><p className="text-sm font-black text-[#0A4C95] sm:text-base">{t.brandWriting}</p><p className="mt-1.5 text-xs font-bold text-slate-500 sm:text-sm">{loadingSlow ? t.generatingSlow : t.generating}</p></div><div className="flex gap-1.5"><span className="h-2 w-2 animate-bounce rounded-full bg-[#0A4C95]" style={{ animationDelay: "0ms" }} /><span className="h-2 w-2 animate-bounce rounded-full bg-[#0A4C95]" style={{ animationDelay: "150ms" }} /><span className="h-2 w-2 animate-bounce rounded-full bg-[#0A4C95]" style={{ animationDelay: "300ms" }} /></div></div> : generationFailed ? <div className="mt-5 rounded-xl border-2 border-amber-200 bg-amber-50 p-5 text-center sm:mt-6 sm:rounded-2xl sm:p-8"><p className="text-xs font-bold leading-5 text-amber-900 sm:text-sm sm:leading-6">{GENERATION_BUSY_MESSAGE}</p><button type="button" onClick={retryGenerate} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-[#0A4C95] px-5 text-xs font-black text-white transition active:scale-[.98] sm:mt-5 sm:min-h-12 sm:rounded-xl sm:text-sm"><RefreshCw size={16} className="sm:size-[18px]" />Try Again</button></div> : reviews.length ? <div className="mt-5 space-y-4 sm:mt-6 sm:space-y-5">{reviews.map((review, index) => <article key={review.id ?? index} className="rounded-xl border-2 border-slate-200 p-4 sm:rounded-2xl sm:p-5"><div className="flex gap-1.5">{Array.from({ length: 5 }).map((_, star) => <GoogleStar key={star} active={star < reviewRating} size={16} />)}</div><p className="mt-3 whitespace-pre-line break-words text-xs font-semibold leading-5 sm:mt-4 sm:text-base sm:leading-7">{review.content}</p><button type="button" onClick={() => void copyReview(review)} className="mt-4 flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#0A4C95] px-3 text-xs font-black text-white transition active:scale-[.98] sm:mt-5 sm:min-h-12 sm:rounded-xl sm:px-4 sm:text-base"><Clipboard size={16} className="sm:size-[18px]" />{t.copyReview}</button></article>)}</div> : <div className="mt-5 rounded-xl border border-dashed border-slate-300 p-5 text-center text-xs font-bold text-slate-500 sm:mt-6 sm:rounded-2xl sm:p-8 sm:text-sm">{t.empty}</div>}{!loading && <button type="button" onClick={() => goToStep(2)} className="mt-5 min-h-11 w-full rounded-xl border-2 border-slate-200 bg-white text-xs font-black text-slate-700 transition active:scale-[.98] sm:mt-6 sm:min-h-12 sm:text-sm">{t.back}</button>}</section>}
+  // Fixed-height, single-card layout (pure presentation - no text/copy/keyword/generation logic
+  // below differs from before): outer <main> is exactly one viewport tall and never scrolls;
+  // BrandHeader/BrandFooter are compact shrink-0 strips; the middle region is a flex-1 container
+  // that centers a card capped at max-h-[640px]/[680px]. The card itself fills whatever space is
+  // left between header and footer (h-full), so header+card+footer always sum to <=100dvh - the
+  // page can never need to scroll, regardless of exact device chrome height.
+  if (!currentLanguage) return <main style={style} className="flex h-[100dvh] flex-col overflow-hidden bg-[var(--patient-bg)] text-slate-950">
+    <div className="shrink-0 px-4 pt-3 sm:px-5 sm:pt-4"><BrandHeader /></div>
+    <div className="flex min-h-0 flex-1 items-center justify-center px-4 py-2 sm:px-5">
+      <section className="flex h-full max-h-[600px] w-full max-w-sm flex-col items-center justify-center rounded-3xl border border-blue-100 bg-white p-4 text-center shadow-2xl sm:max-w-md sm:rounded-[2rem] sm:p-8">
+        <div className="mb-3 shrink-0 sm:mb-4"><StepDots current={1} /></div>
+        <img src="/medirank-logo.png" alt="MediRank" className="mx-auto h-10 w-10 shrink-0 rounded-2xl object-contain ring-1 ring-slate-200 sm:h-12 sm:w-12" style={{ maxWidth: "80px" }} />
+        <p className="mt-2 shrink-0 text-xs font-black uppercase tracking-[.12em] text-[#0A4C95] sm:mt-3 sm:tracking-[.2em]">MediRank</p>
+        <h1 className="mt-2 shrink-0 text-xl font-black leading-tight sm:text-3xl">{t.chooseLanguage}</h1>
+        <p className="mt-2 shrink-0 text-xs font-semibold leading-5 text-slate-700 sm:mt-3 sm:text-base sm:leading-6">{t.languageHint}</p>
+        <div className="mt-5 grid w-full shrink-0 gap-2 sm:mt-7 sm:gap-3">
+          <button type="button" onClick={() => setCurrentLanguage("english")} className="min-h-11 rounded-2xl border-2 border-[#0A4C95] bg-white text-sm font-black text-slate-950 shadow-md transition active:scale-[.98] sm:min-h-14 sm:text-lg">English</button>
+          <button type="button" onClick={() => setCurrentLanguage("hinglish")} className="min-h-11 rounded-2xl bg-[#0A4C95] text-sm font-black text-white shadow-lg transition active:scale-[.98] sm:min-h-14 sm:text-lg">Hinglish</button>
+        </div>
+      </section>
     </div>
-    <BrandFooter />
+    <div className="shrink-0"><BrandFooter /></div>
+  </main>;
+
+  const activeReview = reviews[activeDraft] ?? reviews[0] ?? null;
+
+  return <main style={style} className="flex h-[100dvh] flex-col overflow-hidden bg-white text-slate-950">
+    <div className="shrink-0 px-4 pt-3 sm:px-5 sm:pt-4"><BrandHeader /></div>
+    <div className="flex min-h-0 flex-1 items-center justify-center px-4 py-2 sm:px-5">
+      <div className="flex h-full max-h-[680px] w-full max-w-sm flex-col overflow-hidden rounded-3xl border border-blue-100 bg-white shadow-2xl sm:max-w-md sm:rounded-[2rem]">
+        {/* Compact clinic header - fixed small logo (well under the 80-100px cap), tight spacing,
+            so it never dominates the card's limited vertical budget. */}
+        <header className="shrink-0 px-4 pt-4 text-center sm:px-6 sm:pt-6">
+          {doctor.logo_url ? <img src={doctor.logo_url} alt={clinicName} className="mx-auto h-10 w-10 rounded-xl object-contain ring-1 ring-slate-200 sm:h-12 sm:w-12" style={{ maxWidth: "80px" }} /> : <span className="mx-auto grid h-10 w-10 place-items-center rounded-xl bg-[#0A4C95] text-sm font-black text-white sm:h-12 sm:w-12 sm:text-base">{initials}</span>}
+          <p className="mt-1.5 break-words text-[11px] font-black text-[#0A4C95] sm:mt-2 sm:text-xs">{clinicName}</p>
+          <h1 className="mt-1.5 line-clamp-2 text-sm font-black leading-snug sm:mt-2 sm:text-lg sm:leading-relaxed">{visitQuestion}</h1>
+          {allowLanguageStep && <button type="button" onClick={() => setCurrentLanguage(null)} className="mt-1.5 min-h-6 px-2 text-[11px] font-bold text-[#0A4C95] transition hover:bg-blue-50 sm:mt-2 sm:text-xs">{currentLanguage === "english" ? "English" : "Hinglish"}</button>}
+        </header>
+
+        <div className="shrink-0 py-2 sm:py-3"><StepDots current={stepNumber} /></div>
+
+        {/* STEP 1: rating - vertically centered in the remaining card space, nothing to scroll */}
+        {step === 1 && <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-4 text-center sm:px-6"><p className="shrink-0 text-xs font-black uppercase tracking-[.12em] text-[#0A4C95] sm:tracking-[.18em]">{t.ratingStepTitle} <span className="text-red-600">*</span></p><div className="mt-4 flex shrink-0 justify-center gap-2 sm:mt-5 sm:gap-3" role="radiogroup" aria-label="Select star rating" onMouseLeave={() => setHoverRating(null)}>{Array.from({ length: 5 }).map((_, index) => { const value = index + 1; const previewRating = hoverRating ?? selectedRating ?? 0; return <button key={value} type="button" role="radio" aria-checked={selectedRating === value} onMouseEnter={() => { if (window.matchMedia("(hover: hover) and (pointer: fine)").matches) setHoverRating(value); }} onFocus={() => setHoverRating(value)} onBlur={() => setHoverRating(null)} onTouchStart={(event) => { event.preventDefault(); selectRating(value); }} onClick={() => selectRating(value)} className="group grid h-11 w-11 touch-manipulation place-items-center rounded-full transition-colors duration-75 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4285F4] active:bg-slate-200 sm:h-13 sm:w-13 sm:hover:bg-slate-100"><GoogleStar active={value <= previewRating} size={32} /></button>; })}</div><p className="mt-3 min-h-5 shrink-0 text-xs font-extrabold text-slate-700 sm:mt-4 sm:text-sm">{selectedRating ? selectedRating >= 5 ? "Loved it" : selectedRating === 4 ? "Good, with small feedback" : "Needs improvement" : "Select your rating"}</p>{validationError && <p className="mt-3 shrink-0 rounded-xl bg-red-50 px-4 py-2.5 text-xs font-black text-red-700 sm:mt-4 sm:text-sm">{validationError}</p>}</div>}
+
+        {/* STEP 2: highlight chips - title/counter fixed, only the chip GRID scrolls internally if
+            a clinic has more keywords than fit (bounded scroll, not a whole-page scroll) */}
+        {step === 2 && <div className="flex min-h-0 flex-1 flex-col px-4 sm:px-6"><div className="flex shrink-0 items-center justify-between gap-3 sm:gap-4"><div className="min-w-0"><h2 className="text-sm font-black sm:text-lg">{t.chipsTitle}</h2><p className="mt-0.5 text-[11px] font-bold leading-4 text-slate-500 sm:text-xs sm:leading-5">{t.chipsHint}</p></div><span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-[#0A4C95]">{selectedChips.length}/{MIN_DETAIL_CHIPS}</span></div><div className="mt-3 min-h-0 flex-1 overflow-y-auto sm:mt-4"><div className="grid grid-cols-1 gap-2 pb-1 min-[360px]:grid-cols-2 sm:gap-2.5">{chipOptions.map((value) => <button key={value} type="button" aria-pressed={selectedChips.includes(value)} onClick={() => toggleChip(value)} className={`min-h-11 rounded-xl border-2 px-3 py-2 text-left text-[11px] font-black leading-4 transition active:scale-[.98] sm:min-h-12 sm:rounded-2xl sm:px-4 sm:py-2.5 sm:text-xs sm:leading-5 ${selectedChips.includes(value) ? "border-[#0A4C95] bg-blue-50 text-[#0A4C95] shadow-md" : "border-slate-200 bg-white text-slate-950 shadow-sm"}`}><span className="flex min-w-0 items-center gap-1.5 break-words">{selectedChips.includes(value) && <Check size={14} className="shrink-0 sm:size-[15px]" />}{value}</span></button>)}</div></div>{validationError && <p className="mt-2 shrink-0 rounded-xl bg-red-50 px-3 py-2 text-[11px] font-black text-red-700 sm:text-xs">{validationError}</p>}<p className="mt-2 shrink-0 pb-3 text-center text-[11px] font-bold text-slate-400 sm:pb-4 sm:text-xs">{t.minChips}</p></div>}
+
+        {/* STEP 3: loading -> drafts CAROUSEL (one draft visible at a time, swipe/arrows/dots to
+            move between the 3) instead of a stacked list - fits the fixed card with zero page
+            scroll; only the review TEXT area scrolls internally if a draft runs long. */}
+        {step === 3 && <section ref={draftsSectionRef} className="flex min-h-0 flex-1 flex-col px-4 pb-4 sm:px-6 sm:pb-6">
+          {!loading && <div className="shrink-0 text-center"><h2 className="text-sm font-black sm:text-lg">{t.draftsTitle}</h2>{selectedChips.length > 0 && <p className="mt-0.5 break-words text-[11px] font-bold leading-4 text-slate-500 sm:text-xs">{selectedChips.join(", ")} - {reviewRating} star tone</p>}</div>}
+          <div className="mt-2 flex min-h-0 flex-1 flex-col sm:mt-3">
+            {loading ? <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 rounded-2xl border-2 border-blue-100 bg-blue-50/40 px-4 text-center sm:gap-4" aria-live="polite"><span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[#0A4C95] text-white shadow-lg sm:h-14 sm:w-14"><Sparkles size={22} className="animate-pulse" /></span><div className="shrink-0"><p className="text-xs font-black text-[#0A4C95] sm:text-sm">{t.brandWriting}</p><p className="mt-1 text-[11px] font-bold text-slate-500 sm:text-xs">{loadingSlow ? t.generatingSlow : t.generating}</p></div><div className="flex shrink-0 gap-1.5"><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[#0A4C95]" style={{ animationDelay: "0ms" }} /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[#0A4C95]" style={{ animationDelay: "150ms" }} /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[#0A4C95]" style={{ animationDelay: "300ms" }} /></div></div>
+            : generationFailed ? <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 rounded-xl border-2 border-amber-200 bg-amber-50 p-4 text-center sm:rounded-2xl sm:p-6"><p className="text-xs font-bold leading-5 text-amber-900 sm:text-sm sm:leading-6">{GENERATION_BUSY_MESSAGE}</p><button type="button" onClick={retryGenerate} className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-[#0A4C95] px-5 text-xs font-black text-white transition active:scale-[.98] sm:min-h-11 sm:rounded-xl sm:text-sm"><RefreshCw size={15} className="sm:size-[17px]" />Try Again</button></div>
+            : activeReview ? <div className="flex min-h-0 flex-1 flex-col" onTouchStart={handleDraftTouchStart} onTouchEnd={handleDraftTouchEnd}>
+                <div className="flex min-h-0 flex-1 items-stretch gap-1 sm:gap-2">
+                  {reviews.length > 1 && <button type="button" onClick={prevDraft} disabled={activeDraft === 0} aria-label="Previous draft" className="grid w-6 shrink-0 place-items-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-[#0A4C95] disabled:opacity-20 disabled:hover:bg-transparent sm:w-8"><ChevronLeft size={18} className="sm:size-[20px]" /></button>}
+                  <article className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border-2 border-slate-200 px-3 py-3 sm:rounded-2xl sm:px-4 sm:py-4">
+                    <div className="flex shrink-0 justify-center gap-1.5">{Array.from({ length: 5 }).map((_, star) => <GoogleStar key={star} active={star < reviewRating} size={14} />)}</div>
+                    <div className="mt-2 min-h-0 flex-1 overflow-y-auto sm:mt-3"><p className="whitespace-pre-line break-words text-xs font-semibold leading-5 sm:text-sm sm:leading-6">{activeReview.content}</p></div>
+                  </article>
+                  {reviews.length > 1 && <button type="button" onClick={nextDraft} disabled={activeDraft === reviews.length - 1} aria-label="Next draft" className="grid w-6 shrink-0 place-items-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-[#0A4C95] disabled:opacity-20 disabled:hover:bg-transparent sm:w-8"><ChevronRight size={18} className="sm:size-[20px]" /></button>}
+                </div>
+                {reviews.length > 1 && <div className="mt-2 flex shrink-0 justify-center gap-1.5 sm:mt-3">{reviews.map((_, index) => <button key={index} type="button" onClick={() => goToDraft(index)} aria-label={`Draft ${index + 1}`} aria-current={index === activeDraft} className={`h-1.5 rounded-full transition-all ${index === activeDraft ? "w-5 bg-[#0A4C95]" : "w-1.5 bg-slate-200"}`} />)}</div>}
+                <button type="button" onClick={() => void copyReview(activeReview)} className="mt-2 flex min-h-10 w-full shrink-0 items-center justify-center gap-2 rounded-lg bg-[#0A4C95] px-3 text-xs font-black text-white transition active:scale-[.98] sm:mt-3 sm:min-h-11 sm:rounded-xl sm:px-4 sm:text-sm"><Clipboard size={15} className="sm:size-[17px]" />{t.copyReview}</button>
+              </div>
+            : <div className="flex min-h-0 flex-1 items-center justify-center rounded-xl border border-dashed border-slate-300 p-4 text-center text-xs font-bold text-slate-500 sm:rounded-2xl sm:text-sm">{t.empty}</div>}
+          </div>
+        </section>}
+      </div>
+    </div>
+    <div className="shrink-0"><BrandFooter /></div>
 
     {showThankYou && <div className="fixed inset-0 z-[70] flex flex-col overflow-y-auto bg-slate-950/70 px-4 pt-4 backdrop-blur-md sm:px-5 sm:pt-5" role="dialog" aria-modal="true" aria-label={t.thankTitle}><BrandHeader /><div className="grid flex-1 place-items-center py-3 sm:py-5"><section className="w-full max-w-sm rounded-2xl bg-white p-4 text-center shadow-2xl sm:max-w-md sm:rounded-[2rem] sm:p-8"><ThankYouAnimation /><h2 className="text-xl font-black text-slate-950 sm:text-2xl">{t.thankTitle}</h2><p className="mt-2 text-xs font-bold leading-5 text-slate-900 sm:mt-3 sm:text-base sm:leading-6">{t.thankBody}</p>{doctor.gmb_review_link ? <a href={googleEnabled ? doctor.gmb_review_link : undefined} target="_blank" rel="noreferrer" aria-disabled={!googleEnabled} onClick={(event) => { if (!googleEnabled) event.preventDefault(); else trackGoogleProceed(); }} className={`mt-5 flex min-h-11 w-full items-center justify-center gap-1.5 rounded-lg px-3 text-center text-xs font-black text-white transition active:scale-[.98] sm:mt-7 sm:min-h-14 sm:gap-2 sm:rounded-xl sm:px-4 sm:text-base ${googleEnabled ? "bg-[#0A4C95] shadow-[0_0_25px_rgba(10,76,149,.4)]" : "cursor-wait bg-slate-400"}`}>{googleEnabled ? <>{t.google}<ExternalLink size={14} className="sm:size-[18px]" /></> : <><Loader2 size={16} className="animate-spin sm:size-[19px]" />{t.preparing}</>}</a> : <p className="mt-4 rounded-lg bg-amber-100 p-3 text-xs font-bold sm:mt-6 sm:rounded-xl sm:p-4 sm:text-base">{t.noGoogle}</p>}</section></div><BrandFooter /></div>}
   </main>;
