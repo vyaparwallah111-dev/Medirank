@@ -41,9 +41,25 @@ export async function POST(request: Request) {
       }).eq("id", payment.id);
       if (paymentUpdateError) throw paymentUpdateError;
 
+      const planDaysMap: Record<string, number> = {
+        "1-month": 30,
+        "3-month": 90,
+        "6-month": 180,
+        "1-year": 365,
+        growth: 30,
+        premium: 30,
+      };
+      const days = planDaysMap[payment.plan] || 30;
       const planStartedAt = new Date();
-      const planExpiresAt = new Date(planStartedAt.getTime() + 30 * 24 * 60 * 60 * 1000);
-      const { error: doctorUpdateError } = await admin.from("doctors").update({ plan: payment.plan, subscription_tier: payment.plan, plan_started_at: planStartedAt.toISOString(), plan_expires_at: planExpiresAt.toISOString(), total_scans_used: 0 }).eq("id", payment.doctor_id);
+      const planExpiresAt = new Date(planStartedAt.getTime() + days * 24 * 60 * 60 * 1000);
+      const tier = payment.plan === "premium" || payment.plan === "1-year" ? "premium" : "growth";
+      const { error: doctorUpdateError } = await admin.from("doctors").update({
+        plan: payment.plan,
+        subscription_tier: tier,
+        plan_started_at: planStartedAt.toISOString(),
+        plan_expires_at: planExpiresAt.toISOString(),
+        total_scans_used: 0,
+      }).eq("id", payment.doctor_id);
       if (doctorUpdateError) throw doctorUpdateError;
     }
 

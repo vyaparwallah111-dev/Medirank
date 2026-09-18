@@ -115,10 +115,41 @@ export default async function Dashboard() {
   const dailyPoints=dailyAnalyticsPoints.some(point=>point.scans||point.posts)?dailyAnalyticsPoints:dailyTrendsFromScans(legacyTrendRows);
   const weeklyPoints=weeklyAnalyticsPoints.some(point=>point.scans||point.posts)?weeklyAnalyticsPoints:weeklyTrendsFromScans(legacyTrendRows);
   const today = new Intl.DateTimeFormat("en-IN", { weekday: "long", day: "numeric", month: "long" }).format(new Date()).toUpperCase();
-  const isStarter = (doctor.subscription_tier?.trim().toLowerCase() || "starter") === "starter";
-  const isGrowth = doctor.subscription_tier?.trim().toLowerCase() === "growth";
+  const isExpired = Boolean(doctor.plan_expires_at && new Date(doctor.plan_expires_at).getTime() < Date.now());
+  const isTrial = doctor.plan === "trial";
+  const trialDaysRemaining = doctor.plan_expires_at ? Math.max(0, Math.ceil((new Date(doctor.plan_expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24))) : 0;
+  const isStarter = (doctor.subscription_tier?.trim().toLowerCase() || "starter") === "starter" && !doctor.plan_expires_at && !isTrial;
+  const isGrowth = doctor.subscription_tier?.trim().toLowerCase() === "growth" || doctor.subscription_tier?.trim().toLowerCase() === "premium" || isTrial;
 
-  const heading = <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm font-semibold text-brand">{today}</p><h1 className="mt-1 text-3xl font-extrabold">Good morning, Dr. {displayDoctorName(doctor.doctor_name)}</h1><p className="mt-1 text-slate-500">{isStarter ? "Your Starter plan usage at a glance." : "Here’s what’s happening with your patient reviews."}</p></div><Link href={`/r/${doctor.slug}`} className="btn-primary"><QrCode size={18} />Open patient page</Link></div>;
+  const trialBanner = isTrial && !isExpired ? (
+    <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-blue-200 bg-gradient-to-r from-blue-50 to-indigo-50 p-4 shadow-sm">
+      <div className="flex items-center gap-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#0A4C95] text-white">🎁</span>
+        <div>
+          <p className="text-sm font-extrabold text-[#0A4C95]">3-Day Free Trial Active ({trialDaysRemaining} {trialDaysRemaining === 1 ? 'day' : 'days'} left)</p>
+          <p className="text-xs text-slate-600">Enjoy full unlimited AI features. Recharge your clinic plan anytime.</p>
+        </div>
+      </div>
+      <Link href="/pricing" className="inline-flex shrink-0 items-center justify-center rounded-xl bg-[#0A4C95] px-4 py-2 text-xs font-bold text-white transition hover:bg-blue-900">
+        Recharge Plan
+      </Link>
+    </div>
+  ) : isExpired ? (
+    <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 shadow-sm">
+      <div className="flex items-center gap-3">
+        <AlertTriangle className="text-amber-600 shrink-0" size={24} />
+        <div>
+          <p className="text-sm font-extrabold text-amber-950">Your Trial / Plan has expired</p>
+          <p className="text-xs text-amber-800">Patients will see a plan limit until your clinic plan is recharged.</p>
+        </div>
+      </div>
+      <Link href="/pricing" className="inline-flex shrink-0 items-center justify-center rounded-xl bg-[#F37021] px-5 py-2 text-xs font-bold text-white transition hover:opacity-90">
+        Recharge Now
+      </Link>
+    </div>
+  ) : null;
+
+  const heading = <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm font-semibold text-brand">{today}</p><h1 className="mt-1 text-3xl font-extrabold">Good morning, Dr. {displayDoctorName(doctor.doctor_name)}</h1><p className="mt-1 text-slate-500">{isStarter ? "Your Starter plan usage at a glance." : isTrial ? "Your 3-day free trial dashboard." : "Here’s what’s happening with your patient reviews."}</p></div><Link href={`/r/${doctor.slug}`} className="btn-primary"><QrCode size={18} />Open patient page</Link></div>;
 
   const generationNotice = generationIssuesToday >= 3 ? (
     <div className="mt-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
@@ -131,6 +162,7 @@ export default async function Dashboard() {
     <div className="mx-auto max-w-7xl">
       <DashboardAutoRefresh />
       {heading}
+      {trialBanner}
       {generationNotice}
       <div className="card mt-8 max-w-md p-6">
         <span className="grid h-11 w-11 place-items-center rounded-xl bg-blue-50 text-brand"><ScanLine size={22} /></span>
@@ -149,6 +181,7 @@ export default async function Dashboard() {
     <div className="mx-auto max-w-7xl">
       <DashboardAutoRefresh />
       {heading}
+      {trialBanner}
       {generationNotice}
       <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{stats.map(([Icon, label, value]) => <div className="card p-5 transition-shadow duration-300 hover:shadow-md" key={label}><span className="grid h-10 w-10 place-items-center rounded-xl bg-blue-50 text-brand"><Icon size={20}/></span><p className="mt-5 min-h-9 text-3xl font-extrabold tabular-nums">{value}</p><p className="mt-1 text-sm text-slate-500">{label}</p></div>)}</div>
       <div className="mt-5 grid gap-5 xl:grid-cols-2"><TrendChart title="Daily trend" subtitle="Last 14 days" points={dailyPoints}/><TrendChart title="Weekly trend" subtitle="Last 8 weeks" points={weeklyPoints}/></div>

@@ -14,8 +14,13 @@ export default async function PaymentPage({
 }: {
   searchParams: Promise<{ plan?: string }> | { plan?: string };
 }) {
-  const params = await Promise.resolve(searchParams);
-  if (params.plan !== "growth" && params.plan !== "premium") redirect("/pricing");
+  const resolvedParams = await Promise.resolve(searchParams);
+  const validPlans = ["1-month", "3-month", "6-month", "1-year", "growth", "premium"] as const;
+  type ValidPlan = (typeof validPlans)[number];
+  const selectedPlan: ValidPlan =
+    typeof resolvedParams?.plan === "string" && validPlans.includes(resolvedParams.plan as ValidPlan)
+      ? (resolvedParams.plan as ValidPlan)
+      : "1-month";
 
   const { supabase, user } = await getAuthenticatedUser();
   const { data: doctor } = await supabase
@@ -26,7 +31,7 @@ export default async function PaymentPage({
 
   return (
     <PaymentCheckout
-      plan={params.plan}
+      plan={selectedPlan}
       initialClinicName={doctor?.clinic_name ?? ""}
       initialMobile={doctor?.phone ?? ""}
       initialEmail={user.email ?? ""}

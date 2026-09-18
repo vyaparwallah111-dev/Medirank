@@ -3,7 +3,14 @@ import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
-const prices = { growth: 99900, premium: 199900 } as const;
+const prices: Record<string, number> = {
+  "1-month": 29900,
+  "3-month": 79900,
+  "6-month": 159900,
+  "1-year": 299900,
+  growth: 99900,
+  premium: 199900,
+};
 
 export async function POST(request: Request) {
   try {

@@ -31,13 +31,19 @@ export default async function PatientPage({params}:PageProps){
   if(!supabase){console.error('Patient page: Supabase admin client is not configured.');return unavailable()}
 
   try{
-    const {data:doctor,error}=await supabase.from('doctors').select('id,doctor_name,clinic_name,specialization,slug,gmb_review_link,logo_url,theme_config,knowledge_base,subscription_tier').eq('slug',resolvedSlug).eq('is_active',true).maybeSingle();
+    const {data:doctor,error}=await supabase.from('doctors').select('id,doctor_name,clinic_name,specialization,slug,gmb_review_link,logo_url,theme_config,knowledge_base,subscription_tier,plan,plan_expires_at').eq('slug',resolvedSlug).eq('is_active',true).maybeSingle();
     if(error){console.error('Patient page doctor lookup failed:',error.message);return unavailable()}
     if(!doctor)notFound();
     const subscriptionTier=typeof doctor.subscription_tier==='string'?doctor.subscription_tier.trim().toLowerCase():'starter';
     const isStarter=subscriptionTier==='starter';
-    const isGrowth=subscriptionTier==='growth';
-    if(isStarter){
+    const isGrowth=subscriptionTier==='growth' || subscriptionTier==='premium';
+
+    // Check if trial or subscription plan has expired
+    if(doctor.plan_expires_at && new Date(doctor.plan_expires_at).getTime() < Date.now()){
+      return starterLimit();
+    }
+
+    if(isStarter && !doctor.plan_expires_at){
       const {count:scanCount,error:scanCountError}=await supabase.from('scans').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id);
       if(scanCountError){console.error('Patient page scan limit lookup failed:',scanCountError.message);return unavailable()}
       if((scanCount??0)>=20)return starterLimit();

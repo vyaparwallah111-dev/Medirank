@@ -14,11 +14,18 @@ function getMailgunApiUrl(domain: string, region: string) {
   return `https://${apiHost}/v3/${encodeURIComponent(domain)}/messages`;
 }
 
+function getClientIp(request: Request): string {
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (forwarded) return forwarded.split(",")[0].trim();
+  return request.headers.get("x-real-ip") || request.headers.get("cf-connecting-ip") || "unknown";
+}
+
 export async function POST(request: Request) {
   try {
     const input = parseAuthRequest(await request.json());
     if (!input) return NextResponse.json({ error: "Enter a valid email address." }, { status: 400 });
 
+    const clientIp = getClientIp(request);
     const admin = createAdminClient();
     const apiKey = process.env.MAILGUN_API_KEY;
     const domain = process.env.MAILGUN_DOMAIN;
@@ -30,20 +37,63 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Verification email service is unavailable." }, { status: 503 });
     }
 
-    const recent = new Date(Date.now() - 60_000).toISOString();
-    const { data: latest, error: latestError } = await admin.from("auth_otps").select("created_at").eq("email", input.email).gte("created_at", recent).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    const oneMinuteAgo = new Date(Date.now() - 60_000).toISOString();
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+    const oneHourAgo = new Date(Date.now() - 60 * 60_000).toISOString();
+
+    // 1. IP-level flood protection: Max 10 OTP requests per IP per 10 minutes
+    if (clientIp !== "unknown") {
+      const { count: ipCount, error: ipError } = await admin
+        .from("auth_otps")
+        .select("*", { count: "exact", head: true })
+        .eq("ip_address", clientIp)
+        .gte("created_at", tenMinutesAgo);
+
+      if (!ipError && (ipCount ?? 0) >= 10) {
+        return NextResponse.json(
+          { error: "Too many verification requests from this device. Please try again later." },
+          { status: 429 }
+        );
+      }
+    }
+
+    // 2. Email-level cooldown: 1 minute between consecutive requests
+    const { data: latest, error: latestError } = await admin
+      .from("auth_otps")
+      .select("created_at")
+      .eq("email", input.email)
+      .gte("created_at", oneMinuteAgo)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
     if (latestError) throw latestError;
     if (latest) return NextResponse.json({ error: "Please wait one minute before requesting another code." }, { status: 429 });
+
+    // 3. Email-level hourly limit: Max 5 OTP requests per hour
+    const { count: hourlyCount, error: hourlyError } = await admin
+      .from("auth_otps")
+      .select("*", { count: "exact", head: true })
+      .eq("email", input.email)
+      .gte("created_at", oneHourAgo);
+
+    if (!hourlyError && (hourlyCount ?? 0) >= 5) {
+      return NextResponse.json(
+        { error: "Maximum verification attempts reached for this email. Please try again in an hour." },
+        { status: 429 }
+      );
+    }
 
     const { code, expiresAt } = generateOtp();
     const { error: deleteError } = await admin.from("auth_otps").delete().eq("email", input.email).eq("is_verified", false);
     if (deleteError) throw deleteError;
 
-    // id, is_verified, attempts, and created_at are populated by database defaults.
+    // Save with IP address for abuse monitoring
     const { error: insertError } = await admin.from("auth_otps").insert({
       email: input.email,
       otp_code: code,
       expires_at: expiresAt.toISOString(),
+      ip_address: clientIp !== "unknown" ? clientIp : null,
     });
     if (insertError) throw insertError;
 

@@ -10,20 +10,23 @@ export async function middleware(req:NextRequest){
   const supabase=createServerClient(url,key,{cookies:{getAll:()=>req.cookies.getAll(),setAll(c:CookieToSet[]){c.forEach(({name,value})=>req.cookies.set(name,value));res=NextResponse.next({request:req});c.forEach(({name,value,options})=>res.cookies.set(name,value,options as any))}}});
   const {data:{user}}=await supabase.auth.getUser();
   const pathname=req.nextUrl.pathname;
-  const protectedPath=pathname.startsWith('/dashboard')||pathname.startsWith('/admin');
+  const protectedPath=pathname.startsWith('/dashboard')||pathname.startsWith('/admin')||pathname.startsWith('/onboarding');
   if(!user&&protectedPath)return NextResponse.redirect(new URL('/login',req.url));
 
-  let profile:{is_admin?:boolean;is_active?:boolean}|null=null;
+  let profile:{id?:string;is_admin?:boolean;is_active?:boolean}|null=null;
   if(user&&(protectedPath||pathname==='/login'||pathname==='/signup')){
-    const result=await supabase.from('doctors').select('is_admin,is_active').eq('auth_user_id',user.id).maybeSingle();
+    const result=await supabase.from('doctors').select('id,is_admin,is_active').eq('auth_user_id',user.id).maybeSingle();
     profile=result.data;
   }
   if(user&&pathname.startsWith('/admin')&&profile?.is_admin!==true)return NextResponse.redirect(new URL('/login',req.url));
   if(user&&pathname.startsWith('/dashboard')&&profile?.is_admin===true)return NextResponse.redirect(new URL('/admin/dashboard',req.url));
   if(user&&pathname.startsWith('/dashboard')&&profile?.is_active===false)return NextResponse.redirect(new URL('/login?blocked=1',req.url));
+  if(user&&pathname.startsWith('/onboarding')&&profile?.id)return NextResponse.redirect(new URL('/dashboard',req.url));
   if(user&&(pathname==='/login'||pathname==='/signup')){
     if(profile?.is_active===false)return res;
-    return NextResponse.redirect(new URL(profile?.is_admin===true?'/admin/dashboard':'/dashboard',req.url));
+    if(profile?.is_admin===true)return NextResponse.redirect(new URL('/admin/dashboard',req.url));
+    if(profile?.id)return NextResponse.redirect(new URL('/dashboard',req.url));
+    return NextResponse.redirect(new URL('/onboarding',req.url));
   }
   return res;
 }

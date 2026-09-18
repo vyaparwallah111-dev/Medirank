@@ -5,7 +5,7 @@ import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { BadgeCheck, Check, CreditCard, LockKeyhole, ShieldCheck } from "lucide-react";
 
-type Plan = "growth" | "premium";
+type Plan = "1-month" | "3-month" | "6-month" | "1-year" | "growth" | "premium";
 type RazorpayResponse = {
   razorpay_order_id: string;
   razorpay_payment_id: string;
@@ -30,10 +30,14 @@ declare global {
   }
 }
 
-const details = {
-  growth: { name: "Growth", price: 999 },
-  premium: { name: "Clinic / Premium", price: 1999 },
-} as const;
+const details: Record<Plan, { name: string; price: number; period: string }> = {
+  "1-month": { name: "1 Month Plan", price: 299, period: "/ month" },
+  "3-month": { name: "3 Months (Quarterly)", price: 799, period: "/ 3 months" },
+  "6-month": { name: "6 Months (Half-Yearly)", price: 1599, period: "/ 6 months" },
+  "1-year": { name: "1 Year (Annual)", price: 2999, period: "/ year" },
+  growth: { name: "Growth Plan", price: 999, period: "/ month" },
+  premium: { name: "Clinic / Premium", price: 1999, period: "/ month" },
+};
 
 export function PaymentCheckout({
   plan,
@@ -46,7 +50,7 @@ export function PaymentCheckout({
   initialMobile: string;
   initialEmail: string;
 }) {
-  const selected = details[plan];
+  const selected = details[plan] || details["1-month"];
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -117,7 +121,7 @@ export function PaymentCheckout({
             <h1 className="mt-2 text-3xl font-extrabold">{selected.name}</h1>
             <div className="mt-5 flex items-end gap-2">
               <span className="text-5xl font-extrabold">₹{selected.price.toLocaleString("en-IN")}</span>
-              <span className="pb-1 text-slate-400">/ month</span>
+              <span className="pb-1 text-slate-400">{selected.period}</span>
             </div>
             <ul className="mt-9 space-y-4 text-sm text-slate-300">
               {["Instant account activation after verification", "Server-verified secure payment", "Cancel your monthly plan anytime"].map((item) => (

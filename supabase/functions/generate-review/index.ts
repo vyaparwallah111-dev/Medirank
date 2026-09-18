@@ -207,7 +207,8 @@ function parseReviews(raw:unknown,expectedCount:number):ParseReviewsResult{
     if(!collection.length)return {reviews:[],failureReason:'malformed_json'};
     const reviews=collection.map(item=>{
       if(!item||typeof item!=='object'||Array.isArray(item))return '';
-      return sanitizeText((item as {review?:unknown}).review,1600);
+      const raw=sanitizeText((item as {review?:unknown}).review,1600);
+      return raw.replace(/https?:\/\/\S+/gi,'').replace(/\[([^\]]+)\]\([^)]+\)/g,'$1').trim();
     });
     if(reviews.length!==expectedCount||reviews.some(review=>review.length<10))return {reviews:[],failureReason:'wrong_review_count'};
     return {reviews:unique(reviews,expectedCount)};
@@ -292,7 +293,7 @@ Deno.serve(async(req)=>{
 
     const dbStartMs=Date.now();
     const [doctorResult,aiSettingsResult,keywordsResult,recentReviewsResult]=await Promise.allSettled([
-      db.from('doctors').select('id,doctor_name,clinic_name,city,specialization,knowledge_base').eq('id',doctorId).eq('is_active',true).maybeSingle(),
+      db.from('doctors').select('id,doctor_name,clinic_name,city,specialization,knowledge_base,plan_expires_at').eq('id',doctorId).eq('is_active',true).maybeSingle(),
       db.from('doctor_ai_settings').select('*').eq('doctor_id',doctorId).maybeSingle(),
       db.from('doctor_keywords').select('keyword').eq('doctor_id',doctorId),
       db.from('generated_reviews').select('content').eq('doctor_id',doctorId).order('created_at',{ascending:false}).limit(15),
@@ -307,6 +308,20 @@ Deno.serve(async(req)=>{
       return fail('not_found',404);
     }
 
+    // 1. Hardening: Reject generation if clinic plan/trial has expired
+    if(doctor.plan_expires_at && new Date(doctor.plan_expires_at).getTime() < Date.now()){
+      console.warn('Review generation blocked: Doctor plan/trial expired', { doctorId });
+      return fail('plan_expired', 402);
+    }
+
+    // 2. Hardening: Rate limiting per doctor (max 60 generations per 10 minutes to prevent API drain loops)
+    const tenMinutesAgo=new Date(Date.now()-10*60_000).toISOString();
+    const {count:recentDoctorGenerations}=await db.from('review_generation_meta').select('*',{count:'exact',head:true}).eq('doctor_id',doctorId).gte('created_at',tenMinutesAgo);
+    if((recentDoctorGenerations??0)>60){
+      console.warn('Rate limit triggered for doctor_id',{doctorId});
+      return fail('rate_limit_exceeded',429);
+    }
+
     const aiSettings=aiSettingsResult.status==='fulfilled'?aiSettingsResult.value.data:null;
     const keywordRows=(keywordsResult.status==='fulfilled'?keywordsResult.value.data:[]) as Array<{keyword:unknown}>;
     const recentReviews=(recentReviewsResult.status==='fulfilled'?recentReviewsResult.value.data:[]) as Array<{content:unknown}>;
@@ -315,14 +330,19 @@ Deno.serve(async(req)=>{
     const priorityKeywords=selectPriorityKeywords(aiSettings,unique(keywordRows.map(r=>sanitizeText(r.keyword,80)).filter(Boolean)));
     const mergedKeywords=mergeKeywordsByPriority(priorityKeywords,unique(keywordRows.map(r=>sanitizeText(r.keyword,80)).filter(Boolean)));
 
-    // User selections this session
-    // NOTE: patient_name/patient_locality intentionally not read from the request anymore. Gemini was
-    // writing reviews about the patient in THIRD PERSON when a name was present ("Avinash ko fear
-    // tha" / "he is the Best Doctor") instead of first person as the patient themselves - a confusing,
-    // unnatural voice, and inconsistent within a single review in at least one observed case. Rather
-    // than patch the prompt repeatedly, the feature (and its frontend collection step) was removed.
+    // User selections this session with prompt injection defense
     const selectedChips=unique([...list(body.selected_chips,80),...list(body.selected_keywords,80),...list(body.selected_experiences,80),sanitizeText(body.selected_chip,80)].filter(Boolean),5);
-    const customNotes=sanitizeText(body.custom_notes,240);
+    const sanitizeCustomNotes=(val:unknown)=>{
+      const str=typeof val==='string'?val:'';
+      return str
+        .replace(/https?:\/\/\S+/gi,'')
+        .replace(/<[^>]*>/g,'')
+        .replace(/(?:ignore|disregard|override|forget)\s+(?:previous|all|above|system)\s+(?:instructions|prompts|rules)/gi,'')
+        .replace(/\s+/g,' ')
+        .trim()
+        .slice(0,200);
+    };
+    const customNotes=sanitizeCustomNotes(body.custom_notes);
 
     // Build ClientDigest
     const kb=(doctor.knowledge_base&&typeof doctor.knowledge_base==='object'?doctor.knowledge_base:{}) as KB;
