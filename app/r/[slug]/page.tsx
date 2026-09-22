@@ -31,7 +31,7 @@ export default async function PatientPage({params}:PageProps){
   if(!supabase){console.error('Patient page: Supabase admin client is not configured.');return unavailable()}
 
   try{
-    const {data:doctor,error}=await supabase.from('doctors').select('id,doctor_name,clinic_name,specialization,slug,gmb_review_link,logo_url,theme_config,knowledge_base,subscription_tier,plan,plan_expires_at').eq('slug',resolvedSlug).eq('is_active',true).maybeSingle();
+    const {data:doctor,error}=await supabase.from('doctors').select('id,doctor_name,clinic_name,specialization,slug,gmb_review_link,logo_url,theme_config,knowledge_base,subscription_tier,plan,plan_expires_at,business_type,business_category').eq('slug',resolvedSlug).eq('is_active',true).maybeSingle();
     if(error){console.error('Patient page doctor lookup failed:',error.message);return unavailable()}
     if(!doctor)notFound();
     const subscriptionTier=typeof doctor.subscription_tier==='string'?doctor.subscription_tier.trim().toLowerCase():'starter';

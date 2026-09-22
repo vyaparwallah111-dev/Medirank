@@ -293,7 +293,7 @@ Deno.serve(async(req)=>{
 
     const dbStartMs=Date.now();
     const [doctorResult,aiSettingsResult,keywordsResult,recentReviewsResult]=await Promise.allSettled([
-      db.from('doctors').select('id,doctor_name,clinic_name,city,specialization,knowledge_base,plan_expires_at').eq('id',doctorId).eq('is_active',true).maybeSingle(),
+      db.from('doctors').select('id,doctor_name,clinic_name,city,specialization,knowledge_base,plan_expires_at,business_type,business_category').eq('id',doctorId).eq('is_active',true).maybeSingle(),
       db.from('doctor_ai_settings').select('*').eq('doctor_id',doctorId).maybeSingle(),
       db.from('doctor_keywords').select('keyword').eq('doctor_id',doctorId),
       db.from('generated_reviews').select('content').eq('doctor_id',doctorId).order('created_at',{ascending:false}).limit(15),
@@ -307,6 +307,9 @@ Deno.serve(async(req)=>{
       void logSystemError(db,doctorId,'Doctor not found or inactive');
       return fail('not_found',404);
     }
+
+    const isCoaching = doctor.business_type === 'coaching';
+    const targetCount = isCoaching ? 1 : TARGET_COUNT;
 
     // 1. Hardening: Reject generation if clinic plan/trial has expired
     if(doctor.plan_expires_at && new Date(doctor.plan_expires_at).getTime() < Date.now()){
@@ -366,7 +369,11 @@ Deno.serve(async(req)=>{
       language,
     };
 
-    // Build unified prompt
+    // Build prompts based on vertical (Coaching vs Doctor)
+    let prompt = '';
+    let simplifiedPrompt = '';
+    let minimalPrompt = '';
+
     const selectedArchetypeKey=mapToneToArchetype(digest.tone_preference,[]);
     const selectedArchetype=STRUCTURE_ARCHETYPES[selectedArchetypeKey];
     const personalityVariant=selectPersonalityVariant([]);
@@ -374,30 +381,42 @@ Deno.serve(async(req)=>{
     const includeDoctorName=Math.random()<0.45;
     const allowEmoji=rating>=4&&Math.random()<0.45;
 
-    const allKeywords=unique([...digest.high_priority_keywords,...digest.medium_keywords,...digest.low_keywords,...digest.selected_chips],10);
-    const selectedConcern=rating>=4&&digest.patient_concerns.length?randomItem(digest.patient_concerns):null;
-    const selectedUSP=digest.usp_points.length?randomItem(digest.usp_points):null;
+    if (isCoaching) {
+      // COACHING SPECIFIC PROMPT (Optimized for low tokens & 1 student/parent review)
+      const activeChips = (digest.selected_chips.length ? digest.selected_chips : digest.high_priority_keywords);
+      const chipsString = activeChips.length ? activeChips.map(k => `"${k}"`).join(', ') : 'quality teaching, doubt clearing';
+      
+      prompt = `You are a Google review generator for an educational coaching institute. Generate exactly 1 authentic, genuine first-person review from a student or parent perspective.
 
-    // Replaced a fixed 5-option framing menu + 3 rigid per-draft length brackets (short-term fix from
-    // the previous round). Both worked WITHIN a batch of 3, but at scale (hundreds of reviews per
-    // clinic) they'd converge on only 5 possible framings and 3 possible lengths - a detectable
-    // pattern of its own. Now: an open-ended framing instruction (model generates its own variation,
-    // not a pick-from-list) and a probabilistic length distribution (a target shape across MANY
-    // generations, not a rigid per-draft assignment) - see lengthDistribution and the prompt text below.
-    const lengthDistribution=rating>=4
-      ? '~30% land short (2-3 sentences), ~40% medium (4-6 sentences), ~30% longer (7-9 sentences)'
-      : rating===3
-        ? '~30% land short (2 sentences), ~40% medium (3-4 sentences), ~30% longer (5-6 sentences)'
-        : '~30% land short (2 sentences), ~40% medium (3-4 sentences), ~30% longer (5 sentences)';
+INSTITUTE: ${digest.clinic_name} (${digest.specialization || 'Coaching & Guidance'}) taught by ${digest.doctor_name}, in ${digest.primary_area || digest.city}.
+RATING: ${rating} star${rating !== 1 ? 's' : ''} | LANGUAGE: ${digest.language === 'hinglish' ? 'natural everyday Hinglish (mix of Hindi & English as Indian students text)' : 'English'}
+${digest.custom_notes ? `STUDENT EXPERIENCE NOTE: "${digest.custom_notes}"` : ''}
 
-    // NOTE: Prompt was ~5100 chars (~1275 tokens) before this trim - roughly HALVED to ~2500 chars
-    // (~625 tokens) while keeping every functional rule (anti-template, structure variation, keyword
-    // rules, patient/doctor fusion). Removed: a 38-item exhaustive FORBIDDEN PHRASES list (1200+ chars
-    // of near-duplicate generic phrases - replaced with 5 representative examples + the underlying
-    // principle, which models generalize from just as well) and a redundant BAD-example block (already
-    // covered by the ANTI-TEMPLATE RULE prose). This was done to reduce input-token processing time as
-    // one contributing factor toward the production timeout investigation - see LAYER_TIMEOUTS_MS above.
-    const prompt=`You are a Google review generator for a clinic. Generate exactly ${TARGET_COUNT} authentic patient reviews that read like real patient stories, not checklists.
+KEY HIGHLIGHTS TO WEAVE NATURALLY: ${chipsString}
+
+PERSPECTIVE & RULES:
+- Write strictly in FIRST PERSON as a student who studies/studied here or a parent ("I joined for preparation...", "My concept clarity improved...", "Sir explains difficult topics very easily...", "The study atmosphere and facilities here are...").
+- Keep it natural, genuine, 3-5 sentences.
+- Avoid generic robotic phrases (e.g. "highly recommended", "top quality", "very satisfied") - make it sound like a real student sharing their actual experience.
+
+Return exactly 1 review as JSON: [{"review": "..."}]`;
+
+      simplifiedPrompt = `Write exactly 1 authentic first-person Google review for ${digest.clinic_name} (${digest.specialization || 'Coaching'}) with ${digest.doctor_name}, in ${digest.language === 'hinglish' ? 'natural Hinglish' : 'English'}. Rating: ${rating} stars. Mention: ${chipsString}. Length: 3-4 natural sentences from a student perspective.
+Return as JSON: [{"review": "..."}]`;
+
+      minimalPrompt = `Write 1 short natural first-person Google review for ${digest.clinic_name} (${digest.specialization || 'Coaching'}) from a student. Rating: ${rating} stars. Mention ${chipsString}.
+Return as JSON: [{"review": "..."}]`;
+    } else {
+      // DOCTOR SPECIFIC PROMPT (Preserves 3 patient reviews for clinics)
+      const selectedConcern=rating>=4&&digest.patient_concerns.length?randomItem(digest.patient_concerns):null;
+      const selectedUSP=digest.usp_points.length?randomItem(digest.usp_points):null;
+      const lengthDistribution=rating>=4
+        ? '~30% land short (2-3 sentences), ~40% medium (4-6 sentences), ~30% longer (7-9 sentences)'
+        : rating===3
+          ? '~30% land short (2 sentences), ~40% medium (3-4 sentences), ~30% longer (5-6 sentences)'
+          : '~30% land short (2 sentences), ~40% medium (3-4 sentences), ~30% longer (5 sentences)';
+
+      prompt=`You are a Google review generator for a clinic. Generate exactly ${TARGET_COUNT} authentic patient reviews that read like real patient stories, not checklists.
 
 PERSPECTIVE (mandatory, read first): write entirely in FIRST PERSON, as if YOU are the patient sharing your own experience ("I visited", "my appointment", "I felt"). Never refer to "the patient" or any patient name in third person - you ARE the person who visited, not someone describing them. Doctor and clinic names are fine to mention directly by name (e.g. "Dr. Sharma explained clearly") - only the patient's own identity must never appear in third person.
 
@@ -428,13 +447,7 @@ GOOD example (narrative, combined elements): "My visit went well, and the doctor
 
 Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
 
-    // LAYER 3 prompt: same facts (clinic, rating tone, keywords, first-person, language), but with
-    // the structural-variation/anti-template machinery (archetypes, personality variants, casing
-    // profiles, length-distribution percentages, doctor-name/concern/USP fusion rules) stripped out.
-    // Shorter prompt -> faster to process and fewer distinct instructions to satisfy at once, which
-    // is exactly what a fallback layer needs: fewer ways for the response to come back malformed or
-    // truncated, at the cost of some of the narrative variety the full prompt aims for.
-    const simplifiedPrompt=`Write exactly ${TARGET_COUNT} authentic, first-person patient Google reviews, in ${digest.language==='hinglish'?'natural Hinglish (mixing Hindi and English words/phrases the way Indian patients actually text online)':'English'}.
+      simplifiedPrompt=`Write exactly ${TARGET_COUNT} authentic, first-person patient Google reviews, in ${digest.language==='hinglish'?'natural Hinglish (mixing Hindi and English words/phrases the way Indian patients actually text online)':'English'}.
 
 Clinic: ${digest.doctor_name} at ${digest.clinic_name}${digest.primary_area?`, ${digest.primary_area}`:''} (${digest.specialization}).
 Rating: ${rating} star${rating!==1?'s':''} - tone should be ${rating===1?'honest, specific complaints':rating===2?'mixed, disappointed but fair':rating===3?'balanced, neutral':'genuinely positive'}.
@@ -445,17 +458,11 @@ Make the ${TARGET_COUNT} reviews read like ${TARGET_COUNT} different people wrot
 
 Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
 
-    // LAYER 4 (last resort) prompt: intentionally as minimal as a prompt can be while still meeting
-    // the frontend's contract of exactly ${TARGET_COUNT} reviews (the drafts carousel/copy-tracking
-    // flow expects 3 - dropping to 1 would mean a second, separate change to the frontend just to
-    // handle this rare edge case, which isn't worth it when "3 short reviews from one minimal prompt"
-    // is just as fast and just as reliable as "1 short review", but keeps the rest of the app
-    // untouched). No tone/style guidance beyond rating + first person + a couple of keywords - the
-    // fewest possible constraints, for the highest possible success rate when everything else failed.
-    const minimalKeywords=(digest.high_priority_keywords.length?digest.high_priority_keywords:digest.selected_chips).slice(0,2);
-    const minimalPrompt=`Write exactly ${TARGET_COUNT} short, natural, first-person Google reviews (2-3 sentences each) from a patient of ${digest.doctor_name} at ${digest.clinic_name}, in ${digest.language==='hinglish'?'Hinglish':'English'}. Each is a ${rating}-star review, first-person, naturally mentioning: ${minimalKeywords.length?minimalKeywords.join(', '):digest.clinic_name}. Make the ${TARGET_COUNT} reviews different from each other.
+      minimalKeywords=(digest.high_priority_keywords.length?digest.high_priority_keywords:digest.selected_chips).slice(0,2);
+      minimalPrompt=`Write exactly ${TARGET_COUNT} short, natural, first-person Google reviews (2-3 sentences each) from a patient of ${digest.doctor_name} at ${digest.clinic_name}, in ${digest.language==='hinglish'?'Hinglish':'English'}. Each is a ${rating}-star review, first-person, naturally mentioning: ${minimalKeywords.length?minimalKeywords.join(', '):digest.clinic_name}. Make the ${TARGET_COUNT} reviews different from each other.
 
 Return as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
+    }
 
     // Call Gemini
     console.log('🔍 DIAGNOSIS START');
@@ -484,11 +491,11 @@ Return as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
     type LayerNumber=1|2|3|4;
     type LayerAttempt={layer:LayerNumber;label:string;model:string;prompt:string;maxOutputTokens:number;timeoutMs:number};
     const primaryLayers:LayerAttempt[]=[
-      {layer:1,label:'full_model+full_prompt',model:GEMINI_MODEL,prompt,maxOutputTokens:4096,timeoutMs:LAYER_TIMEOUTS_MS[1]},
-      {layer:2,label:'lite_model+full_prompt',model:GEMINI_MODEL_LITE,prompt,maxOutputTokens:4096,timeoutMs:LAYER_TIMEOUTS_MS[2]},
-      {layer:3,label:'lite_model+simplified_prompt',model:GEMINI_MODEL_LITE,prompt:simplifiedPrompt,maxOutputTokens:2048,timeoutMs:LAYER_TIMEOUTS_MS[3]},
+      {layer:1,label:'full_model+full_prompt',model:GEMINI_MODEL,prompt,maxOutputTokens:isCoaching?1024:4096,timeoutMs:LAYER_TIMEOUTS_MS[1]},
+      {layer:2,label:'lite_model+full_prompt',model:GEMINI_MODEL_LITE,prompt,maxOutputTokens:isCoaching?800:4096,timeoutMs:LAYER_TIMEOUTS_MS[2]},
+      {layer:3,label:'lite_model+simplified_prompt',model:GEMINI_MODEL_LITE,prompt:simplifiedPrompt,maxOutputTokens:isCoaching?500:2048,timeoutMs:LAYER_TIMEOUTS_MS[3]},
     ];
-    const lastResortLayer:LayerAttempt={layer:4,label:'lite_model+minimal_prompt(last_resort)',model:GEMINI_MODEL_LITE,prompt:minimalPrompt,maxOutputTokens:1200,timeoutMs:LAYER_TIMEOUTS_MS[4]};
+    const lastResortLayer:LayerAttempt={layer:4,label:'lite_model+minimal_prompt(last_resort)',model:GEMINI_MODEL_LITE,prompt:minimalPrompt,maxOutputTokens:isCoaching?400:1200,timeoutMs:LAYER_TIMEOUTS_MS[4]};
 
     async function runLayer(cfg:LayerAttempt):Promise<{reviews:string[]|null;metrics:Record<string,unknown>}>{
       const attemptStartMs=Date.now();
@@ -496,32 +503,19 @@ Return as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
       const geminiPayload={
         contents:[{parts:[{text:cfg.prompt}]}],
         generationConfig:{
-          // Raised from 0.85 - the open-ended NATURAL VARIATION instruction (replacing the fixed
-          // framing menu/length brackets) relies on the model's own randomness to do more of the
-          // variation work across drafts and across separate generations, so it needs more room to vary.
           temperature:0.95,
           topP:0.95,
           topK:40,
           thinkingConfig:{thinkingLevel:'low'},
-          // maxOutputTokens is a COMBINED budget for thinking + visible output on Gemini 3 models -
-          // confirmed via multiple independent real-world reports (e.g. googleapis/python-genai#2062).
-          // 4096 for the full prompt (anti-template rule + 3 structural shapes + keyword weaving is a
-          // real constraint-satisfaction problem) leaves ~2000 for 'low'-level thinking + ~1200 for the
-          // actual 3-review JSON output, +margin. Layers 3/4 use a smaller budget since their prompts
-          // ask for far less - a bigger ceiling doesn't cost latency, but there's no need for it either.
           maxOutputTokens:cfg.maxOutputTokens,
           responseMimeType:'application/json',
         },
       };
-      // Structured per-layer metrics - deliberately one JSON blob per line so it can be grepped and
-      // pasted straight into a spreadsheet/table across multiple real requests in production, and so
-      // "how often are we falling back to Layer 2/3/4" is directly answerable from function logs.
+
       const metrics:Record<string,unknown>={layer:cfg.layer,label:cfg.label,model:cfg.model,promptChars:cfg.prompt.length,approxPromptTokens,maxOutputTokens:cfg.maxOutputTokens,timeoutMs:cfg.timeoutMs};
       try{
         const response=await fetchWithSla(`https://generativelanguage.googleapis.com/v1beta/models/${cfg.model}:generateContent?key=${geminiKey}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(geminiPayload)},cfg.timeoutMs);
         metrics.latencyMs=Date.now()-attemptStartMs;
-        // Surface any rate-limit-related headers Google returns, whether this attempt succeeded or
-        // failed. Only logged if actually present - never fabricated.
         const rateLimitHeaders:Record<string,string>={};
         response.headers.forEach((value,key)=>{if(/ratelimit|retry-after|quota/i.test(key))rateLimitHeaders[key]=value});
         if(Object.keys(rateLimitHeaders).length)metrics.rateLimitHeaders=rateLimitHeaders;
@@ -532,7 +526,6 @@ Return as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
           return {reviews:null,metrics};
         }
         const envelope=await response.json() as any;
-        // usageMetadata is Gemini's OWN reported token accounting - authoritative, not an estimate.
         if(envelope?.usageMetadata){
           metrics.usageMetadata={
             promptTokenCount:envelope.usageMetadata.promptTokenCount,
@@ -547,23 +540,16 @@ Return as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
           console.error(`❌ Layer ${cfg.layer} (${cfg.label}) failed - INVALID RESPONSE STRUCTURE`,{parts});
           return {reviews:null,metrics};
         }
-        // Defensive hardening: parts are contiguous chunks of ONE text stream, not separate lines -
-        // joining with '' (not '\n') avoids inserting a stray newline mid-string if Gemini ever
-        // splits the answer across multiple parts.
         const modelText=parts.map((p:any)=>typeof p.text==='string'?p.text:'').filter(Boolean).join('');
         console.log(`📥 Layer ${cfg.layer} (${cfg.label}) RAW GEMINI RESPONSE:\n`,modelText);
-        const parsed=parseReviews(modelText,TARGET_COUNT);
-        if(parsed.reviews.length===TARGET_COUNT){
+        const parsed=parseReviews(modelText,targetCount);
+        if(parsed.reviews.length===targetCount){
           metrics.outcome='success';
           console.log(`✅ Layer ${cfg.layer} (${cfg.label}) succeeded - parsed ${parsed.reviews.length} reviews in ${metrics.latencyMs}ms`);
           return {reviews:parsed.reviews,metrics};
         }
-        // Distinct outcome per failure shape - 'truncated_json' specifically means maxOutputTokens ran
-        // out mid-response (thinking + output share that budget on Gemini 3), separate from
-        // 'malformed_json' (genuinely broken JSON) and 'wrong_review_count' (valid JSON, but not
-        // exactly 3 usable reviews) - each points at a different fix.
         metrics.outcome=parsed.failureReason||'wrong_review_count';
-        console.error(`❌ Layer ${cfg.layer} (${cfg.label}) failed - ${metrics.outcome} (parsed ${parsed.reviews.length}/${TARGET_COUNT} reviews)`);
+        console.error(`❌ Layer ${cfg.layer} (${cfg.label}) failed - ${metrics.outcome} (parsed ${parsed.reviews.length}/${targetCount} reviews)`);
         return {reviews:null,metrics};
       }catch(error){
         metrics.latencyMs=Date.now()-attemptStartMs;
@@ -655,7 +641,8 @@ Return as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
       doctor_id:doctorId,
       rating,
       language,
-      target_count:TARGET_COUNT,
+      target_count:targetCount,
+      business_type:isCoaching?'coaching':'doctor',
       review_count:reviews.length,
       archetype:usedFullPrompt?selectedArchetypeKey:null,
       personality:usedFullPrompt?personalityVariant:null,

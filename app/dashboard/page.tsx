@@ -149,12 +149,37 @@ export default async function Dashboard() {
     </div>
   ) : null;
 
-  const heading = <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm font-semibold text-brand">{today}</p><h1 className="mt-1 text-3xl font-extrabold">Good morning, Dr. {displayDoctorName(doctor.doctor_name)}</h1><p className="mt-1 text-slate-500">{isStarter ? "Your Starter plan usage at a glance." : isTrial ? "Your 3-day free trial dashboard." : "Here’s what’s happening with your patient reviews."}</p></div><Link href={`/r/${doctor.slug}`} className="btn-primary"><QrCode size={18} />Open patient page</Link></div>;
+  const isCoaching = doctor.business_type === 'coaching';
+  const displayName = isCoaching
+    ? doctor.doctor_name.replace(/^(dr|mr|mrs|ms)\.?\s*/i, '').trim()
+    : displayDoctorName(doctor.doctor_name);
+  const greetingTitle = isCoaching
+    ? `Good morning, ${displayName}`
+    : `Good morning, Dr. ${displayName}`;
+  const subtitle = isStarter
+    ? "Your Starter plan usage at a glance."
+    : isTrial
+      ? `Your 3-day free trial ${isCoaching ? 'coaching' : 'clinic'} dashboard.`
+      : `Here’s what’s happening with your ${isCoaching ? 'student' : 'patient'} reviews.`;
+
+  const heading = (
+    <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+      <div>
+        <p className="text-sm font-semibold text-brand">{today}</p>
+        <h1 className="mt-1 text-3xl font-extrabold">{greetingTitle}</h1>
+        <p className="mt-1 text-slate-500">{subtitle}</p>
+      </div>
+      <Link href={`/r/${doctor.slug}`} className="btn-primary">
+        <QrCode size={18} />
+        {isCoaching ? "Open student review page" : "Open patient page"}
+      </Link>
+    </div>
+  );
 
   const generationNotice = generationIssuesToday >= 3 ? (
     <div className="mt-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
       <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-600" />
-      <p className="text-sm font-medium text-amber-900">AI review generation experienced some issues today. Patients may have seen a "try again" message a few times — this usually resolves on its own, but reach out to support if it keeps happening.</p>
+      <p className="text-sm font-medium text-amber-900">AI review generation experienced some issues today. Users may have seen a "try again" message a few times — this usually resolves on its own, but reach out to support if it keeps happening.</p>
     </div>
   ) : null;
 
