@@ -52,6 +52,36 @@ interface AppliedCoupon {
   finalAmount: number;
 }
 
+async function getCashfreeSdkInstance(): Promise<any> {
+  if (typeof window === "undefined") return null;
+  if (typeof window.Cashfree === "function") return window.Cashfree;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (!settled) {
+        settled = true;
+        resolve(typeof window.Cashfree === "function" ? window.Cashfree : null);
+      }
+    };
+
+    const existing = document.querySelector('script[src*="cashfree.js"]');
+    if (existing) {
+      existing.addEventListener("load", finish);
+      existing.addEventListener("error", finish);
+      setTimeout(finish, 1500);
+    } else {
+      const script = document.createElement("script");
+      script.src = "https://sdk.cashfree.com/js/v3/cashfree.js";
+      script.async = true;
+      script.onload = finish;
+      script.onerror = finish;
+      document.head.appendChild(script);
+      setTimeout(finish, 2000);
+    }
+  });
+}
+
 export function PaymentCheckout({
   plan,
   initialClinicName,
@@ -148,8 +178,10 @@ export function PaymentCheckout({
           couponCode: appliedCoupon?.code || undefined,
         }),
       });
-      const order = await orderResponse.json();
-      if (!orderResponse.ok) throw new Error(order.error || "Unable to create payment order.");
+      const order = await orderResponse.json().catch(() => ({}));
+      if (!orderResponse.ok) {
+        throw new Error(order.error || "Unable to create payment order. Please try again.");
+      }
 
       // 0. Free / 100% Off Coupon direct activation
       if (order.gateway === "free_coupon" && order.activated) {
@@ -157,28 +189,52 @@ export function PaymentCheckout({
         return;
       }
 
-      // 1. Cashfree One-Click Checkout
+      // 1. Cashfree Checkout
       if (order.gateway === "cashfree" && order.paymentSessionId) {
-        const targetEnv = (order.env || "production").toLowerCase().includes("sandbox") ? "sandbox" : "production";
-        const hostedCheckoutUrl = targetEnv === "sandbox"
-          ? `https://sandbox.cashfree.com/order/#${order.paymentSessionId}`
-          : `https://payments.cashfree.com/order/#${order.paymentSessionId}`;
+        const targetEnv: "production" | "sandbox" =
+          (order.env || "production").toLowerCase().includes("sandbox") ? "sandbox" : "production";
+        const hostedCheckoutUrl =
+          targetEnv === "sandbox"
+            ? `https://sandbox.cashfree.com/order/#${order.paymentSessionId}`
+            : `https://payments.cashfree.com/order/#${order.paymentSessionId}`;
 
-        if (typeof window !== "undefined" && typeof window.Cashfree === "function") {
+        const CashfreeSDK = await getCashfreeSdkInstance();
+
+        if (typeof CashfreeSDK === "function") {
           try {
-            const cashfree = window.Cashfree({ mode: targetEnv });
-            await cashfree.checkout({
-              paymentSessionId: order.paymentSessionId,
-              redirectTarget: "_self",
-            });
+            const cashfree = CashfreeSDK({ mode: targetEnv });
+            cashfree
+              .checkout({
+                paymentSessionId: order.paymentSessionId,
+                redirectTarget: "_modal",
+              })
+              .then((result: any) => {
+                if (result?.error) {
+                  console.warn("Cashfree checkout notice:", result.error);
+                  setLoading(false);
+                  if (result.error.message && !result.error.message.toLowerCase().includes("close")) {
+                    setError(result.error.message);
+                  }
+                } else if (result?.redirect) {
+                  // Handled by gateway redirect
+                } else if (result?.paymentDetails) {
+                  window.location.assign("/dashboard/success");
+                } else {
+                  setLoading(false);
+                }
+              })
+              .catch((modalErr: any) => {
+                console.warn("Cashfree modal checkout fallback to hosted URL:", modalErr);
+                window.location.assign(hostedCheckoutUrl);
+              });
             return;
-          } catch (sdkErr) {
-            console.warn("Cashfree SDK checkout fallback to hosted URL:", sdkErr);
+          } catch (initErr) {
+            console.warn("Cashfree init failed, opening hosted checkout:", initErr);
             window.location.assign(hostedCheckoutUrl);
             return;
           }
         } else {
-          // Direct instant navigation to Cashfree One-Click Checkout Page
+          // Direct fallback to Cashfree Hosted Checkout page
           window.location.assign(hostedCheckoutUrl);
           return;
         }
@@ -202,7 +258,7 @@ export function PaymentCheckout({
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(response),
             });
-            const verified = await verifyResponse.json();
+            const verified = await verifyResponse.json().catch(() => ({}));
             if (!verifyResponse.ok) {
               setLoading(false);
               setError(verified.error || "Payment verification failed. Contact support before retrying.");
@@ -215,7 +271,7 @@ export function PaymentCheckout({
         return;
       }
 
-      throw new Error("Unable to start payment gateway. Please try again.");
+      throw new Error("Unable to start payment gateway. Please try again or contact support.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to start checkout.");
       setLoading(false);

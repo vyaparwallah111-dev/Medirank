@@ -8,17 +8,45 @@ export interface CashfreeConfig {
 }
 
 export function getCashfreeConfig(): CashfreeConfig | null {
-  const appId = process.env.CASHFREE_APP_ID || process.env.CASHFREE_CLIENT_ID || process.env.NEXT_PUBLIC_CASHFREE_APP_ID;
-  const secretKey = process.env.CASHFREE_SECRET_KEY || process.env.CASHFREE_API_SECRET;
-  const rawEnv = (process.env.CASHFREE_ENV || process.env.NEXT_PUBLIC_CASHFREE_ENV || "").trim().toUpperCase();
-  
+  const appId = (
+    process.env.CASHFREE_APP_ID ||
+    process.env.CASHFREE_CLIENT_ID ||
+    process.env.CASHFREE_API_KEY ||
+    process.env.CASHFREE_KEY ||
+    process.env.NEXT_PUBLIC_CASHFREE_APP_ID ||
+    process.env.NEXT_PUBLIC_CASHFREE_CLIENT_ID ||
+    ""
+  ).trim();
+
+  const secretKey = (
+    process.env.CASHFREE_SECRET_KEY ||
+    process.env.CASHFREE_API_SECRET ||
+    process.env.CASHFREE_SECRET ||
+    process.env.CASHFREE_KEY_SECRET ||
+    ""
+  ).trim();
+
+  const rawEnv = (
+    process.env.CASHFREE_ENV ||
+    process.env.CASHFREE_ENVIRONMENT ||
+    process.env.NEXT_PUBLIC_CASHFREE_ENV ||
+    process.env.NEXT_PUBLIC_CASHFREE_MODE ||
+    ""
+  ).trim().toUpperCase();
+
   if (!appId || !secretKey) {
     return null;
   }
 
-  const isSandbox = rawEnv === "SANDBOX" || rawEnv === "TEST" || appId.startsWith("TEST");
+  const isSandbox =
+    rawEnv === "SANDBOX" ||
+    rawEnv === "TEST" ||
+    rawEnv === "DEV" ||
+    appId.startsWith("TEST") ||
+    secretKey.startsWith("TEST");
+
   const env: "PRODUCTION" | "SANDBOX" = isSandbox ? "SANDBOX" : "PRODUCTION";
-  const apiVersion = process.env.CASHFREE_API_VERSION || "2023-08-01";
+  const apiVersion = (process.env.CASHFREE_API_VERSION || "2023-08-01").trim();
 
   return {
     appId,
@@ -49,7 +77,7 @@ export interface CreateCashfreeOrderParams {
 export async function createCashfreeOrder(params: CreateCashfreeOrderParams) {
   const config = getCashfreeConfig();
   if (!config) {
-    throw new Error("Cashfree credentials are not configured.");
+    throw new Error("Cashfree credentials are not configured. Please set CASHFREE_APP_ID and CASHFREE_SECRET_KEY.");
   }
 
   const baseUrl = getCashfreeBaseUrl(config.env);
@@ -88,10 +116,16 @@ export async function createCashfreeOrder(params: CreateCashfreeOrderParams) {
     cache: "no-store",
   });
 
-  const data = await response.json();
+  const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     console.error("Cashfree order creation error:", { status: response.status, data });
-    throw new Error(data.message || data.error || "Failed to create Cashfree order");
+    const errMsg = data.message || data.error || (typeof data === "string" ? data : `Cashfree error (HTTP ${response.status})`);
+    throw new Error(errMsg);
+  }
+
+  if (!data.payment_session_id) {
+    console.error("Cashfree response missing payment_session_id:", data);
+    throw new Error("Cashfree did not return payment session ID.");
   }
 
   return {
@@ -117,7 +151,6 @@ export function verifyCashfreeWebhookSignature(
     const payload = `${timestamp}${rawBody}`;
     const expected = createHmac("sha256", secretKey).update(payload).digest("base64");
     
-    // Direct base64 comparison or buffer timing safe equal
     if (signature === expected) return true;
 
     const signatureBuffer = Buffer.from(signature);
@@ -129,3 +162,4 @@ export function verifyCashfreeWebhookSignature(
     return false;
   }
 }
+
