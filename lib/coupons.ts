@@ -1,8 +1,8 @@
 export interface Coupon {
   code: string;
   description: string;
-  discountType: "percent" | "flat";
-  value: number; // percentage (e.g. 50) or flat amount in INR (e.g. 200)
+  discountType: "percent" | "flat" | "fixed_price";
+  value: number; // percentage (e.g. 50) or flat discount in INR (e.g. 200) or fixed final price in INR (e.g. 10)
   minAmount?: number; // Minimum plan amount required in INR
   maxDiscount?: number; // Max discount cap for percent discounts in INR
   allowedPlans?: string[]; // Empty or omitted means valid for all plans
@@ -11,6 +11,34 @@ export interface Coupon {
 }
 
 export const ACTIVE_COUPONS: Record<string, Coupon> = {
+  PAY10: {
+    code: "PAY10",
+    description: "Special Promo - Pay only ₹10 for the plan",
+    discountType: "fixed_price",
+    value: 10,
+    isActive: true,
+  },
+  OFFER10: {
+    code: "OFFER10",
+    description: "Special ₹10 Limited Offer",
+    discountType: "fixed_price",
+    value: 10,
+    isActive: true,
+  },
+  SPECIAL10: {
+    code: "SPECIAL10",
+    description: "Special Access - Pay only ₹10",
+    discountType: "fixed_price",
+    value: 10,
+    isActive: true,
+  },
+  SAVE789: {
+    code: "SAVE789",
+    description: "Flat ₹789 Off (Pay only ₹10 on ₹799 plan)",
+    discountType: "flat",
+    value: 789,
+    isActive: true,
+  },
   LAUNCH50: {
     code: "LAUNCH50",
     description: "50% Special Launch Discount",
@@ -124,18 +152,22 @@ export function validateAndCalculateCoupon(
   }
 
   let discountAmount = 0;
-  if (coupon.discountType === "percent") {
+  let finalAmount = originalAmountInRupees;
+
+  if (coupon.discountType === "fixed_price") {
+    finalAmount = Math.min(originalAmountInRupees, Math.max(0, coupon.value));
+    discountAmount = Math.max(0, originalAmountInRupees - finalAmount);
+  } else if (coupon.discountType === "percent") {
     discountAmount = (originalAmountInRupees * coupon.value) / 100;
     if (coupon.maxDiscount && discountAmount > coupon.maxDiscount) {
       discountAmount = coupon.maxDiscount;
     }
+    discountAmount = Math.min(originalAmountInRupees, Math.max(0, discountAmount));
+    finalAmount = Math.max(0, originalAmountInRupees - discountAmount);
   } else {
-    discountAmount = coupon.value;
+    discountAmount = Math.min(originalAmountInRupees, Math.max(0, coupon.value));
+    finalAmount = Math.max(0, originalAmountInRupees - discountAmount);
   }
-
-  // Ensure discount does not exceed the plan price
-  discountAmount = Math.min(originalAmountInRupees, Math.max(0, discountAmount));
-  const finalAmount = Math.max(0, originalAmountInRupees - discountAmount);
 
   return {
     isValid: true,
@@ -145,3 +177,4 @@ export function validateAndCalculateCoupon(
     finalAmount: Math.round(finalAmount),
   };
 }
+
