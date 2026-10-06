@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import crypto from "crypto";
 import { generateOtp } from "@/lib/auth/otp";
 import { parseAuthRequest } from "@/lib/auth/validation";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -9,8 +10,8 @@ function escapeHtml(value: string) {
   return value.replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character] ?? character);
 }
 
-function getMailgunApiUrl(domain: string, region: string) {
-  const apiHost = region.trim().toUpperCase() === "EU" ? "api.eu.mailgun.net" : "api.mailgun.net";
+function getMailgunApiUrl(domain: string, region?: string | null) {
+  const apiHost = region && region.trim().toUpperCase() === "EU" ? "api.eu.mailgun.net" : "api.mailgun.net";
   return `https://${apiHost}/v3/${encodeURIComponent(domain)}/messages`;
 }
 
@@ -26,15 +27,22 @@ export async function POST(request: Request) {
     if (!input) return NextResponse.json({ error: "Enter a valid email address." }, { status: 400 });
 
     const clientIp = getClientIp(request);
+    const ipHash = clientIp !== "unknown" ? crypto.createHash("sha256").update(clientIp).digest("hex") : null;
+
     const admin = createAdminClient();
     const apiKey = process.env.MAILGUN_API_KEY;
     const domain = process.env.MAILGUN_DOMAIN;
-    const region = process.env.MAILGUN_REGION;
-    const senderEmail = process.env.MAILGUN_SENDER_EMAIL;
-    const senderName = process.env.MAILGUN_SENDER_NAME;
-    if (!admin || !apiKey || !domain || !region || !senderEmail || !senderName) {
-      console.error("OTP service is missing Supabase or Mailgun configuration.");
-      return NextResponse.json({ error: "Verification email service is unavailable." }, { status: 503 });
+    const region = process.env.MAILGUN_REGION || "US";
+    const senderEmail = process.env.MAILGUN_SENDER_EMAIL || (domain ? `no-reply@${domain}` : "no-reply@medirank.vyaparwallah.com");
+    const senderName = process.env.MAILGUN_SENDER_NAME || "MediRank";
+
+    if (!admin || !apiKey || !domain) {
+      console.error("OTP service configuration error: missing admin client or Mailgun API keys.", {
+        hasAdmin: !!admin,
+        hasApiKey: !!apiKey,
+        hasDomain: !!domain,
+      });
+      return NextResponse.json({ error: "Verification email service is temporarily unavailable." }, { status: 503 });
     }
 
     const oneMinuteAgo = new Date(Date.now() - 60_000).toISOString();
@@ -42,18 +50,22 @@ export async function POST(request: Request) {
     const oneHourAgo = new Date(Date.now() - 60 * 60_000).toISOString();
 
     // 1. IP-level flood protection: Max 10 OTP requests per IP per 10 minutes
-    if (clientIp !== "unknown") {
-      const { count: ipCount, error: ipError } = await admin
-        .from("auth_otps")
-        .select("*", { count: "exact", head: true })
-        .eq("ip_address", clientIp)
-        .gte("created_at", tenMinutesAgo);
+    if (ipHash) {
+      try {
+        const { count: ipCount, error: ipError } = await admin
+          .from("auth_otps")
+          .select("*", { count: "exact", head: true })
+          .eq("ip_hash", ipHash)
+          .gte("created_at", tenMinutesAgo);
 
-      if (!ipError && (ipCount ?? 0) >= 10) {
-        return NextResponse.json(
-          { error: "Too many verification requests from this device. Please try again later." },
-          { status: 429 }
-        );
+        if (!ipError && (ipCount ?? 0) >= 10) {
+          return NextResponse.json(
+            { error: "Too many verification requests from this device. Please try again later." },
+            { status: 429 }
+          );
+        }
+      } catch (err) {
+        console.warn("IP rate check skipped:", err);
       }
     }
 
@@ -88,14 +100,17 @@ export async function POST(request: Request) {
     const { error: deleteError } = await admin.from("auth_otps").delete().eq("email", input.email).eq("is_verified", false);
     if (deleteError) throw deleteError;
 
-    // Save with IP address for abuse monitoring
+    // Save with ip_hash for abuse monitoring
     const { error: insertError } = await admin.from("auth_otps").insert({
       email: input.email,
       otp_code: code,
       expires_at: expiresAt.toISOString(),
-      ip_address: clientIp !== "unknown" ? clientIp : null,
+      ip_hash: ipHash,
     });
-    if (insertError) throw insertError;
+    if (insertError) {
+      console.error("Failed to insert OTP record:", insertError);
+      throw insertError;
+    }
 
     const message = new FormData();
     message.set("from", `${senderName} <${senderEmail}>`);
