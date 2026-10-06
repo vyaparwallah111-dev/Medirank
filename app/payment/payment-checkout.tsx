@@ -52,27 +52,27 @@ interface AppliedCoupon {
   finalAmount: number;
 }
 
-async function getCashfreeSdkInstance(): Promise<any> {
+async function getRazorpaySdkInstance(): Promise<any> {
   if (typeof window === "undefined") return null;
-  if (typeof window.Cashfree === "function") return window.Cashfree;
+  if (typeof window.Razorpay === "function") return window.Razorpay;
 
   return new Promise((resolve) => {
     let settled = false;
     const finish = () => {
       if (!settled) {
         settled = true;
-        resolve(typeof window.Cashfree === "function" ? window.Cashfree : null);
+        resolve(typeof window.Razorpay === "function" ? window.Razorpay : null);
       }
     };
 
-    const existing = document.querySelector('script[src*="cashfree.js"]');
+    const existing = document.querySelector('script[src*="checkout.razorpay.com"]');
     if (existing) {
       existing.addEventListener("load", finish);
       existing.addEventListener("error", finish);
       setTimeout(finish, 1500);
     } else {
       const script = document.createElement("script");
-      script.src = "https://sdk.cashfree.com/js/v3/cashfree.js";
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
       script.async = true;
       script.onload = finish;
       script.onerror = finish;
@@ -189,85 +189,63 @@ export function PaymentCheckout({
         return;
       }
 
-      // 1. Cashfree Checkout
-      if (order.gateway === "cashfree" && order.paymentSessionId) {
-        const targetEnv: "production" | "sandbox" =
-          (order.env || "production").toLowerCase().includes("sandbox") ? "sandbox" : "production";
-        const hostedCheckoutUrl =
-          targetEnv === "sandbox"
-            ? `https://sandbox.cashfree.com/order/#${order.paymentSessionId}`
-            : `https://payments.cashfree.com/order/#${order.paymentSessionId}`;
-
-        const CashfreeSDK = await getCashfreeSdkInstance();
-
-        if (typeof CashfreeSDK === "function") {
-          try {
-            const cashfree = CashfreeSDK({ mode: targetEnv });
-            cashfree
-              .checkout({
-                paymentSessionId: order.paymentSessionId,
-                redirectTarget: "_modal",
-              })
-              .then((result: any) => {
-                if (result?.error) {
-                  console.warn("Cashfree checkout notice:", result.error);
-                  setLoading(false);
-                  if (result.error.message && !result.error.message.toLowerCase().includes("close")) {
-                    setError(result.error.message);
-                  }
-                } else if (result?.redirect) {
-                  // Handled by gateway redirect
-                } else if (result?.paymentDetails) {
-                  window.location.assign("/dashboard/success");
-                } else {
-                  setLoading(false);
-                }
-              })
-              .catch((modalErr: any) => {
-                console.warn("Cashfree modal checkout fallback to hosted URL:", modalErr);
-                window.location.assign(hostedCheckoutUrl);
-              });
-            return;
-          } catch (initErr) {
-            console.warn("Cashfree init failed, opening hosted checkout:", initErr);
-            window.location.assign(hostedCheckoutUrl);
-            return;
-          }
-        } else {
-          // Direct fallback to Cashfree Hosted Checkout page
-          window.location.assign(hostedCheckoutUrl);
-          return;
+      // 1. Razorpay Checkout Modal
+      if (order.gateway === "razorpay" && order.orderId && order.keyId) {
+        const RazorpaySDK = await getRazorpaySdkInstance();
+        if (!RazorpaySDK) {
+          throw new Error("Unable to load Razorpay payment gateway. Please check your connection and refresh.");
         }
-      }
 
-      // 2. Razorpay Checkout
-      if (window.Razorpay && order.keyId) {
-        const checkout = new window.Razorpay({
+        const options: any = {
           key: order.keyId,
           amount: order.amount,
-          currency: "INR",
-          name: isCoaching ? "MediRank / EdTech by Vyapar Wallah" : "MediRank by Vyapar Wallah",
-          description: `${selected.name} subscription`,
+          currency: order.currency || "INR",
+          name: isCoaching ? "MediRank (Vyapar Wallah)" : "MediRank (Vyapar Wallah)",
+          description: `${selected.name} Subscription`,
           order_id: order.orderId,
-          prefill: { name: clinicName, email, contact: mobile },
-          theme: { color: "#0A4C95" },
-          modal: { ondismiss: () => setLoading(false) },
-          handler: async (response) => {
-            const verifyResponse = await fetch("/api/payments/verify", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(response),
-            });
-            const verified = await verifyResponse.json().catch(() => ({}));
-            if (!verifyResponse.ok) {
-              setLoading(false);
-              setError(verified.error || "Payment verification failed. Contact support before retrying.");
-              return;
-            }
-            window.location.assign("/dashboard/success");
+          prefill: {
+            name: clinicName,
+            email,
+            contact: mobile,
           },
-        });
-        checkout.open();
+          theme: {
+            color: "#0A4C95",
+          },
+          modal: {
+            ondismiss: () => {
+              setLoading(false);
+            },
+          },
+          handler: async (response: RazorpayResponse) => {
+            try {
+              const verifyResponse = await fetch("/api/payments/verify", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(response),
+              });
+              const verified = await verifyResponse.json().catch(() => ({}));
+              if (!verifyResponse.ok) {
+                setLoading(false);
+                setError(verified.error || "Payment verification failed. Please contact support.");
+                return;
+              }
+              window.location.assign("/dashboard/success");
+            } catch (verifyErr) {
+              console.warn("Verification network retry warning:", verifyErr);
+              window.location.assign("/dashboard/success");
+            }
+          },
+        };
+
+        const rzp = new RazorpaySDK(options);
+        if (typeof rzp.on === "function") {
+          rzp.on("payment.failed", (failResponse: any) => {
+            console.warn("Razorpay payment failed:", failResponse);
+            setLoading(false);
+            setError(failResponse.error?.description || "Payment could not be completed. Please try again.");
+          });
+        }
+        rzp.open();
         return;
       }
 
@@ -280,7 +258,6 @@ export function PaymentCheckout({
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50 px-5 py-8 sm:py-14">
-      <Script src="https://sdk.cashfree.com/js/v3/cashfree.js" strategy="afterInteractive" />
       <Script src="https://checkout.razorpay.com/v1/checkout.js" strategy="afterInteractive" />
       
       <div className="mx-auto max-w-5xl">

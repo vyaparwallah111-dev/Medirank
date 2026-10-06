@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { getCashfreeConfig, createCashfreeOrder } from "@/lib/cashfree";
 import { validateAndCalculateCoupon } from "@/lib/coupons";
 
 export const runtime = "nodejs";
@@ -32,7 +31,7 @@ export async function POST(request: Request) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return NextResponse.json({ error: "Please sign in to continue." }, { status: 401 });
 
-    const body = await request.json();
+    const body = await request.json().catch(() => ({}));
     const plan = body.plan as keyof typeof pricesInRupees;
     if (!(plan in pricesInRupees)) return NextResponse.json({ error: "Invalid subscription plan." }, { status: 400 });
     
@@ -45,7 +44,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "All billing contact fields are required." }, { status: 400 });
     }
 
-    const { data: doctor } = await supabase.from("doctors").select("id,clinic_name,doctor_name").eq("auth_user_id", user.id).maybeSingle();
+    const { data: doctor } = await supabase
+      .from("doctors")
+      .select("id,clinic_name,doctor_name")
+      .eq("auth_user_id", user.id)
+      .maybeSingle();
+
     if (!doctor) return NextResponse.json({ error: "Complete your profile before upgrading." }, { status: 409 });
 
     const originalPriceRupees = pricesInRupees[plan];
@@ -88,6 +92,7 @@ export async function POST(request: Request) {
       try {
         await admin.from("payments").insert({
           doctor_id: doctor.id,
+          plan: plan,
           amount: 0,
           status: "success",
         });
@@ -104,100 +109,87 @@ export async function POST(request: Request) {
     }
 
     const pricePaise = priceRupees * 100;
-    const orderRefId = `order_${doctor.id.slice(0, 8)}_${Date.now()}`;
 
-    // 1. Check for Cashfree Gateway
-    const cashfreeConfig = getCashfreeConfig();
-    if (cashfreeConfig) {
-      try {
-        const host = request.headers.get("host") || "medirank.vyaparwallah.com";
-        const protocol = host.includes("localhost") ? "http" : "https";
-        const returnUrl = `${protocol}://${host}/dashboard/success?order_id={order_id}`;
-        const notifyUrl = `${protocol}://${host}/api/payments/cashfree-webhook`;
+    // Razorpay Gateway Order Creation
+    const keyId = (
+      process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID ||
+      process.env.RAZORPAY_KEY_ID ||
+      process.env.RAZORPAY_KEY ||
+      process.env.NEXT_PUBLIC_RAZORPAY_KEY ||
+      ""
+    ).trim();
+    const keySecret = (
+      process.env.RAZORPAY_KEY_SECRET ||
+      process.env.RAZORPAY_SECRET ||
+      process.env.RAZORPAY_SECRET_KEY ||
+      ""
+    ).trim();
 
-        const cashfreeOrder = await createCashfreeOrder({
-          orderId: orderRefId,
-          orderAmount: priceRupees,
-          orderCurrency: "INR",
-          customerId: `cust_${doctor.id.replace(/-/g, "").slice(0, 20)}`,
-          customerName: contactName,
-          customerEmail: contactEmail,
-          customerPhone: contactMobile,
-          returnUrl,
-          notifyUrl,
-          orderNote: `MediRank Subscription - ${plan}${appliedCouponCode ? ` (Coupon: ${appliedCouponCode})` : ""}`,
-          orderTags: {
-            doctor_id: doctor.id,
-            plan,
-            coupon: appliedCouponCode || "none",
-          },
-        });
-
-        // Safe DB record
-        try {
-          await supabase.from("payments").insert({
-            doctor_id: doctor.id,
-            amount: pricePaise,
-            status: "pending",
-          });
-        } catch (dbErr) {
-          console.warn("Payment log record note:", dbErr);
-        }
-
-        return NextResponse.json({
-          gateway: "cashfree",
-          orderId: cashfreeOrder.orderId,
-          paymentSessionId: cashfreeOrder.paymentSessionId,
-          amount: priceRupees,
-          env: cashfreeOrder.env,
-        });
-      } catch (cfErr: any) {
-        console.error("Cashfree order creation failed:", cfErr);
-        return NextResponse.json({ error: cfErr?.message || "Failed to initialize Cashfree payment." }, { status: 502 });
-      }
+    if (!keyId || !keySecret) {
+      console.error("Razorpay keys missing in environment variables.");
+      return NextResponse.json(
+        { error: "Razorpay credentials are not configured. Please set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET." },
+        { status: 503 }
+      );
     }
 
-    // 2. Fallback to Razorpay Gateway if configured
-    const keyId = process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID;
-    const keySecret = process.env.RAZORPAY_KEY_SECRET;
-    if (keyId && keySecret) {
-      const receipt = `medirank_${crypto.randomUUID().replaceAll("-", "").slice(0, 24)}`;
-      const razorpayResponse = await fetch("https://api.razorpay.com/v1/orders", {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString("base64")}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ amount: pricePaise, currency: "INR", receipt }),
-        cache: "no-store",
-      });
-      const order = await razorpayResponse.json();
-      if (!razorpayResponse.ok || !order.id) {
-        console.error("Razorpay order creation failed", { status: razorpayResponse.status, error: order.error });
-        return NextResponse.json({ error: "Unable to create a secure payment order." }, { status: 502 });
-      }
+    const receipt = `mr_${doctor.id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 10)}_${Date.now().toString().slice(-8)}`;
+    
+    const razorpayPayload = {
+      amount: pricePaise,
+      currency: "INR",
+      receipt,
+      notes: {
+        doctor_id: doctor.id,
+        plan,
+        coupon: appliedCouponCode || "none",
+        clinic_name: contactName.slice(0, 50),
+        mobile: contactMobile.slice(0, 20),
+        email: contactEmail.slice(0, 50),
+      },
+    };
 
-      try {
-        await supabase.from("payments").insert({
-          doctor_id: doctor.id,
-          amount: pricePaise,
-          status: "pending",
-        });
-      } catch (dbErr) {
-        console.warn("Payment log record note:", dbErr);
-      }
+    const razorpayResponse = await fetch("https://api.razorpay.com/v1/orders", {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString("base64")}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(razorpayPayload),
+      cache: "no-store",
+    });
 
-      return NextResponse.json({
-        gateway: "razorpay",
-        orderId: order.id,
+    const order = await razorpayResponse.json().catch(() => ({}));
+    if (!razorpayResponse.ok || !order.id) {
+      console.error("Razorpay order creation failed", { status: razorpayResponse.status, error: order });
+      const errorMsg = order.error?.description || order.error?.message || "Unable to create Razorpay payment order.";
+      return NextResponse.json({ error: errorMsg }, { status: 502 });
+    }
+
+    const admin = createAdminClient() || supabase;
+    try {
+      await admin.from("payments").insert({
+        doctor_id: doctor.id,
+        plan: plan,
         amount: pricePaise,
-        keyId,
+        razorpay_order_id: order.id,
+        status: "pending",
       });
+    } catch (dbErr) {
+      console.warn("Payment log record note:", dbErr);
     }
 
-    return NextResponse.json({ error: "No payment gateway configured." }, { status: 503 });
-  } catch (error) {
+    return NextResponse.json({
+      gateway: "razorpay",
+      orderId: order.id,
+      amount: pricePaise,
+      keyId,
+      currency: "INR",
+      plan,
+    });
+  } catch (error: any) {
     console.error("Create payment order failed", error);
-    return NextResponse.json({ error: "Unable to start checkout." }, { status: 500 });
+    return NextResponse.json({ error: error?.message || "Unable to start checkout." }, { status: 500 });
   }
 }
+
