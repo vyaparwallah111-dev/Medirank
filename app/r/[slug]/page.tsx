@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation';
 import { AlertCircle } from 'lucide-react';
 import { ReviewExperience } from '@/components/review-experience';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { isCoachingProfile } from '@/lib/vertical';
 
 type PageProps={params:{slug:string}|Promise<{slug:string}>};
 type KnowledgeBase={area_name:string;city_name:string;top_services:string[]};
@@ -10,9 +11,36 @@ const slugPattern=/^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const dynamic='force-dynamic';
 export const revalidate=0;
 
-function unavailable(){return <main className="grid min-h-[100dvh] place-items-center bg-slate-50 px-3"><div className="w-full max-w-xs rounded-2xl border border-slate-200 bg-white p-4 text-center shadow-sm sm:max-w-sm sm:p-7"><AlertCircle className="mx-auto text-orange" size={28} className="sm:size-[32px]"/><h1 className="mt-3 text-lg font-bold sm:mt-4 sm:text-xl">Patient page unavailable</h1><p className="mt-2 text-xs leading-5 text-slate-500 sm:text-sm sm:leading-6">We couldn’t load this clinic right now. Please try scanning the QR code again shortly.</p></div></main>}
+function unavailable(isCoaching = false){
+  return (
+    <main className="grid min-h-[100dvh] place-items-center bg-slate-50 px-3">
+      <div className="w-full max-w-xs rounded-2xl border border-slate-200 bg-white p-4 text-center shadow-sm sm:max-w-sm sm:p-7">
+        <AlertCircle className="mx-auto text-orange" size={28} />
+        <h1 className="mt-3 text-lg font-bold sm:mt-4 sm:text-xl">
+          {isCoaching ? "Review page unavailable" : "Patient page unavailable"}
+        </h1>
+        <p className="mt-2 text-xs leading-5 text-slate-500 sm:text-sm sm:leading-6">
+          {isCoaching
+            ? "We couldn’t load this institute right now. Please try scanning the QR code again shortly."
+            : "We couldn’t load this clinic right now. Please try scanning the QR code again shortly."}
+        </p>
+      </div>
+    </main>
+  );
+}
 
-function starterLimit(){return <main className="grid min-h-[100dvh] place-items-center bg-slate-50 px-3"><div className="w-full max-w-sm rounded-2xl border border-blue-100 bg-white p-5 text-center shadow-soft sm:rounded-3xl sm:p-8"><AlertCircle className="mx-auto text-brand" size={32} className="sm:size-[38px]"/><h1 className="mt-4 text-xl font-extrabold text-slate-950 sm:mt-5 sm:text-2xl">Plan Limit Exceeded</h1><p className="mt-2 text-sm font-bold leading-6 text-slate-700 sm:mt-3 sm:leading-7">Upgrade Your Plan to continue using MediRank.</p><div className="fixed inset-x-0 bottom-0 border-t border-slate-200 bg-white/95 px-3 py-2 text-center text-xs font-bold text-slate-700 backdrop-blur sm:px-4 sm:py-3 sm:text-sm">Powered by Vyapar Wallah</div></div></main>}
+function starterLimit(){
+  return (
+    <main className="grid min-h-[100dvh] place-items-center bg-slate-50 px-3">
+      <div className="w-full max-w-sm rounded-2xl border border-blue-100 bg-white p-5 text-center shadow-soft sm:rounded-3xl sm:p-8">
+        <AlertCircle className="mx-auto text-brand" size={32} />
+        <h1 className="mt-4 text-xl font-extrabold text-slate-950 sm:mt-5 sm:text-2xl">Plan Limit Exceeded</h1>
+        <p className="mt-2 text-sm font-bold leading-6 text-slate-700 sm:mt-3 sm:leading-7">Upgrade Your Plan to continue using MediRank.</p>
+        <div className="fixed inset-x-0 bottom-0 border-t border-slate-200 bg-white/95 px-3 py-2 text-center text-xs font-bold text-slate-700 backdrop-blur sm:px-4 sm:py-3 sm:text-sm">Powered by Vyapar Wallah</div>
+      </div>
+    </main>
+  );
+}
 
 function getOperationalWindow(now=new Date()):OperationalWindow{
   const istOffsetMs=330*60*1000;
@@ -31,9 +59,16 @@ export default async function PatientPage({params}:PageProps){
   if(!supabase){console.error('Patient page: Supabase admin client is not configured.');return unavailable()}
 
   try{
-    const {data:doctor,error}=await supabase.from('doctors').select('id,doctor_name,clinic_name,specialization,slug,gmb_review_link,logo_url,theme_config,knowledge_base,subscription_tier,plan,plan_expires_at,business_type,business_category').eq('slug',resolvedSlug).eq('is_active',true).maybeSingle();
+    const {data:doctor,error}=await supabase.from('doctors').select('id,doctor_name,clinic_name,specialization,slug,gmb_review_link,logo_url,theme_config,knowledge_base,subscription_tier,plan,plan_expires_at').eq('slug',resolvedSlug).eq('is_active',true).maybeSingle();
     if(error){console.error('Patient page doctor lookup failed:',error.message);return unavailable()}
     if(!doctor)notFound();
+
+    const isCoaching = isCoachingProfile(doctor);
+    const doctorWithVertical = {
+      ...doctor,
+      business_type: isCoaching ? ('coaching' as const) : ('doctor' as const),
+    };
+
     const subscriptionTier=typeof doctor.subscription_tier==='string'?doctor.subscription_tier.trim().toLowerCase():'starter';
     const isStarter=subscriptionTier==='starter';
     const isGrowth=subscriptionTier==='growth' || subscriptionTier==='premium';
@@ -43,9 +78,9 @@ export default async function PatientPage({params}:PageProps){
       return starterLimit();
     }
 
-    if(isStarter && !doctor.plan_expires_at){
+    if(isStarter && !doctor.plan_expires_at && doctor.plan !== 'trial'){
       const {count:scanCount,error:scanCountError}=await supabase.from('scans').select('*',{count:'exact',head:true}).eq('doctor_id',doctor.id);
-      if(scanCountError){console.error('Patient page scan limit lookup failed:',scanCountError.message);return unavailable()}
+      if(scanCountError){console.error('Patient page scan limit lookup failed:',scanCountError.message);return unavailable(isCoaching)}
       if((scanCount??0)>=20)return starterLimit();
     }
 
@@ -74,9 +109,9 @@ export default async function PatientPage({params}:PageProps){
       operationalScanSequence:0,
       allowLanguageStep:true,
     };
-    const treatmentKeywords=keywords.filter(item=>item.category==='treatment').map(item=>item.keyword).filter(Boolean);
+    const treatmentKeywords=keywords.filter(item=>item.category==='treatment' || item.category==='teaching').map(item=>item.keyword).filter(Boolean);
     const topServices=Array.from(new Set<string>([...knowledgeBase.top_services,...treatmentKeywords]));
-    return <ReviewExperience doctor={doctor} isStarter={isStarter} isGrowth={isGrowth} scanId={scan?.id??null} experienceKeywords={keywords.filter(item=>item.category!=='treatment').map(item=>item.keyword).filter(Boolean)} topServices={topServices} routingState={routingState}/>;
+    return <ReviewExperience doctor={doctorWithVertical} isStarter={isStarter} isGrowth={isGrowth} scanId={scan?.id??null} experienceKeywords={keywords.filter(item=>item.category!=='treatment' && item.category!=='teaching').map(item=>item.keyword).filter(Boolean)} topServices={topServices} routingState={routingState}/>;
   }catch(error){
     // Preserve Next.js navigation signals such as notFound().
     if(error&&typeof error==='object'&&'digest' in error)throw error;

@@ -3,7 +3,7 @@
 import Script from "next/script";
 import Link from "next/link";
 import { FormEvent, useState } from "react";
-import { BadgeCheck, Check, CreditCard, LockKeyhole, ShieldCheck } from "lucide-react";
+import { BadgeCheck, Check, CreditCard, GraduationCap, LockKeyhole, ShieldCheck, Stethoscope } from "lucide-react";
 
 type Plan = "1-month" | "3-month" | "6-month" | "1-year" | "growth" | "premium";
 type RazorpayResponse = {
@@ -27,6 +27,12 @@ type RazorpayOptions = {
 declare global {
   interface Window {
     Razorpay?: new (options: RazorpayOptions) => { open: () => void };
+    Cashfree?: (options: { mode: "production" | "sandbox" }) => {
+      checkout: (options: {
+        paymentSessionId: string;
+        redirectTarget?: "_self" | "_blank" | "_modal";
+      }) => Promise<unknown>;
+    };
   }
 }
 
@@ -36,7 +42,7 @@ const details: Record<Plan, { name: string; price: number; period: string }> = {
   "6-month": { name: "6 Months (Half-Yearly)", price: 1599, period: "/ 6 months" },
   "1-year": { name: "1 Year (Annual)", price: 2999, period: "/ year" },
   growth: { name: "Growth Plan", price: 999, period: "/ month" },
-  premium: { name: "Clinic / Premium", price: 1999, period: "/ month" },
+  premium: { name: "Premium Plan", price: 1999, period: "/ month" },
 };
 
 export function PaymentCheckout({
@@ -44,11 +50,13 @@ export function PaymentCheckout({
   initialClinicName,
   initialMobile,
   initialEmail,
+  isCoaching = false,
 }: {
   plan: Plan;
   initialClinicName: string;
   initialMobile: string;
   initialEmail: string;
+  isCoaching?: boolean;
 }) {
   const selected = details[plan] || details["1-month"];
   const [loading, setLoading] = useState(false);
@@ -66,41 +74,61 @@ export function PaymentCheckout({
     const email = String(form.get("email") ?? "").trim();
 
     try {
-      if (!window.Razorpay) throw new Error("Secure checkout is still loading. Please try again.");
       const orderResponse = await fetch("/api/payments/order", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan, clinicName, mobile, email }),
+        body: JSON.stringify({ plan, clinicName, mobile, email, isCoaching }),
       });
       const order = await orderResponse.json();
       if (!orderResponse.ok) throw new Error(order.error || "Unable to create payment order.");
 
-      const checkout = new window.Razorpay({
-        key: order.keyId,
-        amount: order.amount,
-        currency: "INR",
-        name: "MediRank by Vyapar Wallah",
-        description: `${selected.name} monthly subscription`,
-        order_id: order.orderId,
-        prefill: { name: clinicName, email, contact: mobile },
-        theme: { color: "#1E40AF" },
-        modal: { ondismiss: () => setLoading(false) },
-        handler: async (response) => {
-          const verifyResponse = await fetch("/api/payments/verify", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(response),
-          });
-          const verified = await verifyResponse.json();
-          if (!verifyResponse.ok) {
-            setLoading(false);
-            setError(verified.error || "Payment verification failed. Contact support before retrying.");
-            return;
-          }
-          window.location.assign("/dashboard/success");
-        },
-      });
-      checkout.open();
+      // 1. Cashfree Checkout
+      if (order.gateway === "cashfree" && order.paymentSessionId) {
+        if (!window.Cashfree) {
+          throw new Error("Payment gateway is initializing. Please try again in a moment.");
+        }
+        const cashfree = window.Cashfree({
+          mode: order.env === "sandbox" ? "sandbox" : "production",
+        });
+        await cashfree.checkout({
+          paymentSessionId: order.paymentSessionId,
+          redirectTarget: "_self",
+        });
+        return;
+      }
+
+      // 2. Razorpay Checkout
+      if (window.Razorpay && order.keyId) {
+        const checkout = new window.Razorpay({
+          key: order.keyId,
+          amount: order.amount,
+          currency: "INR",
+          name: isCoaching ? "MediRank / EdTech by Vyapar Wallah" : "MediRank by Vyapar Wallah",
+          description: `${selected.name} subscription`,
+          order_id: order.orderId,
+          prefill: { name: clinicName, email, contact: mobile },
+          theme: { color: "#0A4C95" },
+          modal: { ondismiss: () => setLoading(false) },
+          handler: async (response) => {
+            const verifyResponse = await fetch("/api/payments/verify", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(response),
+            });
+            const verified = await verifyResponse.json();
+            if (!verifyResponse.ok) {
+              setLoading(false);
+              setError(verified.error || "Payment verification failed. Contact support before retrying.");
+              return;
+            }
+            window.location.assign("/dashboard/success");
+          },
+        });
+        checkout.open();
+        return;
+      }
+
+      throw new Error("Unable to start payment gateway. Please try again.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to start checkout.");
       setLoading(false);
@@ -109,7 +137,9 @@ export function PaymentCheckout({
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50 px-5 py-8 sm:py-14">
+      <Script src="https://sdk.cashfree.com/js/v3/cashfree.js" strategy="afterInteractive" />
       <Script src="https://checkout.razorpay.com/v1/checkout.js" strategy="afterInteractive" />
+      
       <div className="mx-auto max-w-5xl">
         <Link href="/pricing" className="text-sm font-bold text-brand hover:text-blue-800">← Back to pricing</Link>
         <div className="mt-6 grid overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-soft lg:grid-cols-[.85fr_1.15fr]">
@@ -124,30 +154,116 @@ export function PaymentCheckout({
               <span className="pb-1 text-slate-400">{selected.period}</span>
             </div>
             <ul className="mt-9 space-y-4 text-sm text-slate-300">
-              {["Instant account activation after verification", "Server-verified secure payment", "Cancel your monthly plan anytime"].map((item) => (
-                <li key={item} className="flex gap-3"><Check aria-hidden="true" className="shrink-0 text-emerald-400" size={19} />{item}</li>
+              {[
+                "Instant account activation after verification",
+                "Server-verified secure payment",
+                "Cancel your monthly plan anytime",
+              ].map((item) => (
+                <li key={item} className="flex gap-3">
+                  <Check aria-hidden="true" className="shrink-0 text-emerald-400" size={19} />
+                  {item}
+                </li>
               ))}
             </ul>
           </aside>
 
           <section className="p-7 sm:p-10">
             <div className="flex items-center gap-3">
-              <span className="grid h-11 w-11 place-items-center rounded-xl bg-blue-50 text-brand"><CreditCard aria-hidden="true" /></span>
-              <div><h2 className="text-xl font-extrabold text-slate-950">Clinic details</h2><p className="text-sm text-slate-500">Confirm your billing contact information</p></div>
+              <span className="grid h-11 w-11 place-items-center rounded-xl bg-blue-50 text-brand">
+                {isCoaching ? <GraduationCap aria-hidden="true" /> : <CreditCard aria-hidden="true" />}
+              </span>
+              <div>
+                <h2 className="text-xl font-extrabold text-slate-950">
+                  {isCoaching ? "Institute details" : "Clinic details"}
+                </h2>
+                <p className="text-sm text-slate-500">
+                  {isCoaching
+                    ? "Confirm your institute billing contact information"
+                    : "Confirm your clinic billing contact information"}
+                </p>
+              </div>
             </div>
+
             <form onSubmit={pay} className="mt-8 space-y-5">
-              <div><label htmlFor="clinicName" className="label">Clinic name</label><input id="clinicName" name="clinicName" className="input min-h-12" defaultValue={initialClinicName} autoComplete="organization" required /></div>
-              <div><label htmlFor="mobile" className="label">Doctor mobile number <span className="text-slate-400">(WhatsApp)</span></label><input id="mobile" name="mobile" type="tel" inputMode="tel" className="input min-h-12" defaultValue={initialMobile} placeholder="98765 43210" pattern="[0-9+ ()-]{10,18}" autoComplete="tel" required /></div>
-              <div><label htmlFor="email" className="label">Email address</label><input id="email" name="email" type="email" className="input min-h-12" defaultValue={initialEmail} autoComplete="email" required /></div>
-              {error && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">{error}</p>}
-              <button type="submit" disabled={loading} className="btn-primary min-h-14 w-full text-base disabled:cursor-not-allowed disabled:opacity-60">
-                {loading ? <><span className="h-5 w-5 animate-spin rounded-full border-2 border-white/40 border-t-white" /> Processing securely…</> : <><LockKeyhole aria-hidden="true" size={19} /> Pay Securely via Razorpay</>}
+              <div>
+                <label htmlFor="clinicName" className="label">
+                  {isCoaching ? "Institute / Coaching name" : "Clinic name"}
+                </label>
+                <input
+                  id="clinicName"
+                  name="clinicName"
+                  className="input min-h-12"
+                  defaultValue={initialClinicName}
+                  placeholder={isCoaching ? "e.g. Zircon Academy / Career Institute" : "e.g. City Dental Care"}
+                  autoComplete="organization"
+                  required
+                />
+              </div>
+
+              <div>
+                <label htmlFor="mobile" className="label">
+                  {isCoaching ? "Director / Owner mobile number" : "Doctor mobile number"}{" "}
+                  <span className="text-slate-400">(WhatsApp)</span>
+                </label>
+                <input
+                  id="mobile"
+                  name="mobile"
+                  type="tel"
+                  inputMode="tel"
+                  className="input min-h-12"
+                  defaultValue={initialMobile}
+                  placeholder="98765 43210"
+                  pattern="[0-9+ ()-]{10,18}"
+                  autoComplete="tel"
+                  required
+                />
+              </div>
+
+              <div>
+                <label htmlFor="email" className="label">Email address</label>
+                <input
+                  id="email"
+                  name="email"
+                  type="email"
+                  className="input min-h-12"
+                  defaultValue={initialEmail}
+                  autoComplete="email"
+                  required
+                />
+              </div>
+
+              {error && (
+                <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">
+                  {error}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="btn-primary min-h-14 w-full text-base disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {loading ? (
+                  <>
+                    <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                    Processing securely…
+                  </>
+                ) : (
+                  <>
+                    <LockKeyhole aria-hidden="true" size={19} />
+                    Pay ₹{selected.price.toLocaleString("en-IN")} Securely
+                  </>
+                )}
               </button>
             </form>
+
             <div className="mt-7 grid grid-cols-1 gap-3 text-xs font-bold text-slate-600 sm:grid-cols-3">
               <span className="flex items-center gap-2"><LockKeyhole className="text-emerald-600" size={17} />SSL Secured</span>
               <span className="flex items-center gap-2"><ShieldCheck className="text-emerald-600" size={17} />PCI DSS Compliant</span>
-              <span className="flex items-center gap-2"><BadgeCheck className="text-emerald-600" size={17} />Trusted by 500+ Doctors</span>
+              <span className="flex items-center gap-2">
+                <BadgeCheck className="text-emerald-600" size={17} />
+                {isCoaching ? "Trusted by 500+ Institutes" : "Trusted by 500+ Doctors"}
+              </span>
             </div>
           </section>
         </div>

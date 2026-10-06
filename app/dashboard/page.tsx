@@ -127,7 +127,7 @@ export default async function Dashboard() {
         <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#0A4C95] text-white">🎁</span>
         <div>
           <p className="text-sm font-extrabold text-[#0A4C95]">3-Day Free Trial Active ({trialDaysRemaining} {trialDaysRemaining === 1 ? 'day' : 'days'} left)</p>
-          <p className="text-xs text-slate-600">Enjoy full unlimited AI features. Recharge your clinic plan anytime.</p>
+          <p className="text-xs text-slate-600">Enjoy full unlimited AI features. Recharge your {isCoaching ? 'coaching' : 'clinic'} plan anytime.</p>
         </div>
       </div>
       <Link href="/pricing" className="inline-flex shrink-0 items-center justify-center rounded-xl bg-[#0A4C95] px-4 py-2 text-xs font-bold text-white transition hover:bg-blue-900">
@@ -140,7 +140,7 @@ export default async function Dashboard() {
         <AlertTriangle className="text-amber-600 shrink-0" size={24} />
         <div>
           <p className="text-sm font-extrabold text-amber-950">Your Trial / Plan has expired</p>
-          <p className="text-xs text-amber-800">Patients will see a plan limit until your clinic plan is recharged.</p>
+          <p className="text-xs text-amber-800">{isCoaching ? 'Students' : 'Patients'} will see a plan limit until your {isCoaching ? 'coaching' : 'clinic'} plan is recharged.</p>
         </div>
       </div>
       <Link href="/pricing" className="inline-flex shrink-0 items-center justify-center rounded-xl bg-[#F37021] px-5 py-2 text-xs font-bold text-white transition hover:opacity-90">
@@ -150,12 +150,8 @@ export default async function Dashboard() {
   ) : null;
 
   const isCoaching = doctor.business_type === 'coaching';
-  const displayName = isCoaching
-    ? doctor.doctor_name.replace(/^(dr|mr|mrs|ms)\.?\s*/i, '').trim()
-    : displayDoctorName(doctor.doctor_name);
-  const greetingTitle = isCoaching
-    ? `Good morning, ${displayName}`
-    : `Good morning, Dr. ${displayName}`;
+  const personGreeting = formatPersonGreeting(doctor.doctor_name, isCoaching);
+  const greetingTitle = `Good morning, ${personGreeting}`;
   const subtitle = isStarter
     ? "Your Starter plan usage at a glance."
     : isTrial
@@ -211,10 +207,10 @@ export default async function Dashboard() {
       <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{stats.map(([Icon, label, value]) => <div className="card p-5 transition-shadow duration-300 hover:shadow-md" key={label}><span className="grid h-10 w-10 place-items-center rounded-xl bg-blue-50 text-brand"><Icon size={20}/></span><p className="mt-5 min-h-9 text-3xl font-extrabold tabular-nums">{value}</p><p className="mt-1 text-sm text-slate-500">{label}</p></div>)}</div>
       <div className="mt-5 grid gap-5 xl:grid-cols-2"><TrendChart title="Daily trend" subtitle="Last 14 days" points={dailyPoints}/><TrendChart title="Weekly trend" subtitle="Last 8 weeks" points={weeklyPoints}/></div>
       <div className="mt-5 grid gap-5 xl:grid-cols-[1.45fr_.55fr]">
-        <div className="card p-6"><h2 className="font-bold">Review recovery quick action</h2><p className="mt-2 text-sm leading-6 text-slate-500">Copy a ready-to-send WhatsApp message with your clinic's direct review link and share it with past patients.</p>{isGrowth?<DirectLinkShare clinic={doctor.clinic_name} slug={doctor.slug} appOrigin={process.env.NEXT_PUBLIC_APP_URL||''}/>:<Link href="/pricing" className="btn-secondary mt-4 w-full">Unlock with Growth</Link>}</div>
+        <div className="card p-6"><h2 className="font-bold">Review recovery quick action</h2><p className="mt-2 text-sm leading-6 text-slate-500">Copy a ready-to-send WhatsApp message with your {isCoaching ? "institute's" : "clinic's"} direct review link and share it with {isCoaching ? "students" : "past patients"}.</p>{isGrowth?<DirectLinkShare clinic={doctor.clinic_name} slug={doctor.slug} appOrigin={process.env.NEXT_PUBLIC_APP_URL||''}/>:<Link href="/pricing" className="btn-secondary mt-4 w-full">Unlock with Growth</Link>}</div>
         <div className="card p-6"><h2 className="font-bold">Your review QR</h2><p className="text-sm text-slate-500">Ready for your reception desk</p><div className="mx-auto mt-5 grid aspect-square max-w-32 place-items-center rounded-2xl border bg-white p-3"><QrCode className="h-full w-full text-slate-950" strokeWidth={1.2}/></div><Link href="/dashboard/qr-code" className="btn-secondary mt-5 w-full">View & download <ArrowUpRight size={16}/></Link></div>
       </div>
-      <div className="card mt-5 overflow-hidden"><div className="border-b p-5"><h2 className="font-bold">Recent activity</h2></div>{recent.length ? recent.map(row => <div className="flex items-center gap-4 border-b border-slate-100 p-4 last:border-0" key={row.id}><span className={`h-2.5 w-2.5 rounded-full ${row.event_type === "click_maps" ? "bg-emerald-400" : row.event_type === "copy" ? "bg-orange" : "bg-blue-400"}`}/><p className="flex-1 text-sm font-medium">{row.event_type === "click_maps" ? "Google review page opened" : row.event_type === "copy" ? "Review copied" : "QR code scanned"}</p><span className="text-xs text-slate-400">{new Date(row.created_at).toLocaleDateString("en-IN")}</span></div>) : <div className="p-8 text-center text-sm text-slate-400">No patient activity yet.</div>}</div>
+      <div className="card mt-5 overflow-hidden"><div className="border-b p-5"><h2 className="font-bold">Recent activity</h2></div>{recent.length ? recent.map(row => <div className="flex items-center gap-4 border-b border-slate-100 p-4 last:border-0" key={row.id}><span className={`h-2.5 w-2.5 rounded-full ${row.event_type === "click_maps" ? "bg-emerald-400" : row.event_type === "copy" ? "bg-orange" : "bg-blue-400"}`}/><p className="flex-1 text-sm font-medium">{row.event_type === "click_maps" ? "Google review page opened" : row.event_type === "copy" ? "Review copied" : "QR code scanned"}</p><span className="text-xs text-slate-400">{new Date(row.created_at).toLocaleDateString("en-IN")}</span></div>) : <div className="p-8 text-center text-sm text-slate-400">No {isCoaching ? "student" : "patient"} activity yet.</div>}</div>
     </div>
   );
 }

@@ -2,26 +2,29 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Brain, HelpCircle, KeyRound, LayoutDashboard, LogOut, QrCode, Settings, UserRound, Tag, ClipboardCheck } from "lucide-react";
+import { Brain, HelpCircle, LayoutDashboard, LogOut, QrCode, Settings, UserRound, Tag, ClipboardCheck } from "lucide-react";
 import { Logo } from "./logo";
 import { createClient } from "@/lib/supabase/client";
-
-const nav = [
-  [LayoutDashboard, "Overview", "/dashboard"],
-  [QrCode, "My QR Code", "/dashboard/qr-code"],
-  [Brain, "AI Review Settings", "/dashboard/ai-review-settings"],
-  [Tag, "Review keywords", "/dashboard/keywords"],
-  [ClipboardCheck, "Selected reviews", "/dashboard/selected-reviews"],
-  [Settings, "Clinic profile", "/dashboard/profile"],
-  [HelpCircle, "Help & support", "/dashboard/support"],
-] as const;
+import { isCoachingProfile } from "@/lib/vertical";
 
 export function DashboardShell({ children, doctor }: {
   children: React.ReactNode;
-  doctor: { doctor_name: string; clinic_name: string; plan: string | null; subscription_tier: string | null };
+  doctor: { doctor_name: string; clinic_name: string; plan: string | null; subscription_tier: string | null; business_type?: string; specialization?: string | null };
 }) {
   const pathname = usePathname();
   const router = useRouter();
+  const isCoaching = isCoachingProfile(doctor);
+
+  const nav = [
+    [LayoutDashboard, "Overview", "/dashboard"],
+    [QrCode, "My QR Code", "/dashboard/qr-code"],
+    [Brain, "AI Review Settings", "/dashboard/ai-review-settings"],
+    [Tag, "Review keywords", "/dashboard/keywords"],
+    [ClipboardCheck, "Selected reviews", "/dashboard/selected-reviews"],
+    [Settings, isCoaching ? "Institute profile" : "Clinic profile", "/dashboard/profile"],
+    [HelpCircle, "Help & support", "/dashboard/support"],
+  ] as const;
+
   async function logout() {
     await createClient()?.auth.signOut();
     router.push("/login");
@@ -48,7 +51,7 @@ export function DashboardShell({ children, doctor }: {
           <div className="lg:hidden"><Logo /></div>
           <div className="hidden lg:block"><p className="text-sm text-slate-500">{doctor.clinic_name}</p></div>
           <div className="flex items-center gap-3">
-            <span className="hidden text-right sm:block"><b className="block text-sm">{doctor.doctor_name}</b><small className="text-slate-500">Clinic owner</small></span>
+            <span className="hidden text-right sm:block"><b className="block text-sm">{doctor.doctor_name}</b><small className="text-slate-500">{isCoaching ? "Institute owner" : "Clinic owner"}</small></span>
             <span className="grid h-10 w-10 place-items-center rounded-full bg-blue-100 text-brand"><UserRound size={20} /></span>
           </div>
         </header>

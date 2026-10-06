@@ -3,6 +3,8 @@ import { redirect } from 'next/navigation';
 import { unstable_noStore as noStore } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
 
+import { isCoachingProfile } from '@/lib/vertical';
+
 export type Doctor = {
   id: string; auth_user_id: string; doctor_name: string; clinic_name: string;
   specialization: string | null; slug: string; gmb_review_link: string | null;
@@ -30,26 +32,42 @@ export async function getCurrentDoctor(): Promise<Doctor> {
   noStore();
   const { supabase, user } = await getAuthenticatedUser();
   const baseFields = 'id,auth_user_id,doctor_name,clinic_name,specialization,slug,gmb_review_link,city,phone,logo_url,plan,is_active';
-  const currentFields = `${baseFields},business_type,business_category,subscription_tier,plan_started_at,plan_expires_at,theme_config,knowledge_base`;
+  const currentFields = `${baseFields},subscription_tier,plan_started_at,plan_expires_at,theme_config,knowledge_base`;
   let { data, error } = await supabase.from('doctors').select(currentFields).eq('auth_user_id', user.id).maybeSingle();
 
-  // Keep local/legacy databases usable while newer additive migrations are
-  // being applied. Supabase reports a missing selected column as 42703.
   if (error?.code === '42703') {
     const legacy = await supabase.from('doctors').select(baseFields).eq('auth_user_id', user.id).maybeSingle();
-    data = legacy.data ? { ...legacy.data, business_type: 'doctor', business_category: null, subscription_tier: null, theme_config: null, knowledge_base: null } : null;
+    data = legacy.data ? { ...legacy.data, subscription_tier: null, theme_config: null, knowledge_base: null } : null;
     error = legacy.error;
   }
   if (error) {
-    console.error('Unable to load clinic profile:', error.code, error.message);
-    throw new Error('Unable to load your clinic profile.');
+    console.error('Unable to load profile:', error.code, error.message);
+    throw new Error('Unable to load your profile.');
   }
   if (!data) redirect('/onboarding');
   if (data.is_active === false) redirect('/login?blocked=1');
-  if (!data.business_type) data.business_type = 'doctor';
+
+  const isCoaching = isCoachingProfile({
+    ...data,
+    email: user.email,
+  });
+  data.business_type = isCoaching ? 'coaching' : 'doctor';
+
   return data as Doctor;
 }
 
 export function displayDoctorName(name: string | null | undefined) {
   return (name || '').replace(/^dr\.?\s*/i, '').trim();
+}
+
+export function formatPersonGreeting(name: string | null | undefined, isCoaching = false): string {
+  const clean = (name || '').trim();
+  if (!clean) return isCoaching ? 'Educator' : 'Doctor';
+  if (/^(prof|dr|mr|mrs|ms|coach|sir|mentor|shri)\.?\s+/i.test(clean)) {
+    return clean;
+  }
+  if (isCoaching) {
+    return clean;
+  }
+  return `Dr. ${clean}`;
 }

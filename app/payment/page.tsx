@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
-import { redirect } from "next/navigation";
 import { getAuthenticatedUser } from "@/lib/dashboard";
+import { isCoachingProfile } from "@/lib/vertical";
 import { PaymentCheckout } from "./payment-checkout";
 
 export const metadata: Metadata = {
   title: "Secure Checkout | MediRank",
-  description: "Complete your MediRank clinic subscription securely with Razorpay.",
+  description: "Complete your MediRank subscription securely.",
   robots: { index: false, follow: false },
 };
 
@@ -25,9 +25,14 @@ export default async function PaymentPage({
   const { supabase, user } = await getAuthenticatedUser();
   const { data: doctor } = await supabase
     .from("doctors")
-    .select("clinic_name,phone")
+    .select("clinic_name,doctor_name,phone,specialization")
     .eq("auth_user_id", user.id)
     .maybeSingle();
+
+  const isCoaching = isCoachingProfile({
+    ...doctor,
+    email: user.email,
+  });
 
   return (
     <PaymentCheckout
@@ -35,6 +40,7 @@ export default async function PaymentPage({
       initialClinicName={doctor?.clinic_name ?? ""}
       initialMobile={doctor?.phone ?? ""}
       initialEmail={user.email ?? ""}
+      isCoaching={isCoaching}
     />
   );
 }
