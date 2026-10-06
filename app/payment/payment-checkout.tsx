@@ -157,19 +157,31 @@ export function PaymentCheckout({
         return;
       }
 
-      // 1. Cashfree Checkout
+      // 1. Cashfree One-Click Checkout
       if (order.gateway === "cashfree" && order.paymentSessionId) {
-        if (!window.Cashfree) {
-          throw new Error("Payment gateway is initializing. Please try again in a moment.");
+        const targetEnv = (order.env || "production").toLowerCase().includes("sandbox") ? "sandbox" : "production";
+        const hostedCheckoutUrl = targetEnv === "sandbox"
+          ? `https://sandbox.cashfree.com/order/#${order.paymentSessionId}`
+          : `https://payments.cashfree.com/order/#${order.paymentSessionId}`;
+
+        if (typeof window !== "undefined" && typeof window.Cashfree === "function") {
+          try {
+            const cashfree = window.Cashfree({ mode: targetEnv });
+            await cashfree.checkout({
+              paymentSessionId: order.paymentSessionId,
+              redirectTarget: "_self",
+            });
+            return;
+          } catch (sdkErr) {
+            console.warn("Cashfree SDK checkout fallback to hosted URL:", sdkErr);
+            window.location.assign(hostedCheckoutUrl);
+            return;
+          }
+        } else {
+          // Direct instant navigation to Cashfree One-Click Checkout Page
+          window.location.assign(hostedCheckoutUrl);
+          return;
         }
-        const cashfree = window.Cashfree({
-          mode: order.env === "sandbox" ? "sandbox" : "production",
-        });
-        await cashfree.checkout({
-          paymentSessionId: order.paymentSessionId,
-          redirectTarget: "_self",
-        });
-        return;
       }
 
       // 2. Razorpay Checkout
