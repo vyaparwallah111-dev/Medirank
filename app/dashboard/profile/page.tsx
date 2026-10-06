@@ -8,18 +8,20 @@ import { ClinicLogoUpload } from '@/components/clinic-logo-upload';
 const defaultTheme={primary:'#1E40AF',accent:'#F97316',background:'#F8FAFC'};
 export default async function Profile({searchParams}:{searchParams:{saved?:string}}){
   const doctor=await getCurrentDoctor();
+  const isCoaching = doctor.business_type === 'coaching';
   const knowledge=doctor.knowledge_base||{area_name:'',city_name:doctor.city||'',top_services:[]};
   return <div className="mx-auto max-w-3xl">
-    <h1 className="text-3xl font-extrabold">Clinic profile</h1><p className="mt-2 text-slate-500">Keep the details patients see up to date.</p>
-    {searchParams.saved&&<p className="mt-5 flex items-center gap-2 rounded-xl bg-emerald-50 p-4 text-sm font-semibold text-emerald-700"><CheckCircle2 size={18}/>Clinic profile updated.</p>}
+    <h1 className="text-3xl font-extrabold">{isCoaching ? "Institute profile" : "Clinic profile"}</h1>
+    <p className="mt-2 text-slate-500">{isCoaching ? "Keep the details students see up to date." : "Keep the details patients see up to date."}</p>
+    {searchParams.saved&&<p className="mt-5 flex items-center gap-2 rounded-xl bg-emerald-50 p-4 text-sm font-semibold text-emerald-700"><CheckCircle2 size={18}/>{isCoaching ? "Institute profile updated." : "Clinic profile updated."}</p>}
     <form action={updateProfile}><div className="card mt-8 grid gap-5 p-5 sm:grid-cols-2 sm:p-7">
-      <div><label className="label">Doctor name</label><input name="doctor_name" className="input" defaultValue={doctor.doctor_name} required/></div>
-      <div><label className="label">Specialisation</label><input name="specialization" className="input" defaultValue={doctor.specialization||''}/></div>
-      <div className="sm:col-span-2"><label className="label">Clinic name</label><input name="clinic_name" className="input" defaultValue={doctor.clinic_name} required/></div>
+      <div><label className="label">{isCoaching ? "Educator / Director name" : "Doctor name"}</label><input name="doctor_name" className="input" defaultValue={doctor.doctor_name} required/></div>
+      <div><label className="label">{isCoaching ? "Category / Exams" : "Specialisation"}</label><input name="specialization" className="input" defaultValue={doctor.specialization||''} placeholder={isCoaching ? "e.g. NEET, IIT JEE, Foundation" : "e.g. Dental Surgeon"}/></div>
+      <div className="sm:col-span-2"><label className="label">{isCoaching ? "Institute / Coaching name" : "Clinic name"}</label><input name="clinic_name" className="input" defaultValue={doctor.clinic_name} required/></div>
       <div><label className="label">City</label><input name="city" className="input" defaultValue={doctor.city||''}/></div>
       <div><label className="label">Phone</label><input name="phone" className="input" defaultValue={doctor.phone||''}/></div>
       <div className="sm:col-span-2"><label className="label">Google review link</label><input name="gmb_review_link" type="url" className="input" defaultValue={doctor.gmb_review_link||''}/></div>
-      <div className="sm:col-span-2"><label className="label">Clinic logo</label><ClinicLogoUpload currentLogoUrl={doctor.logo_url}/></div>
+      <div className="sm:col-span-2"><label className="label">{isCoaching ? "Institute logo" : "Clinic logo"}</label><ClinicLogoUpload currentLogoUrl={doctor.logo_url}/></div>
     </div><KnowledgeBaseSettings initial={knowledge} specialization={doctor.specialization||''}/><ThemePicker initial={doctor.theme_config||defaultTheme}/><button className="btn-primary mt-6 w-full sm:w-auto">Save profile settings</button></form>
     <div className="mt-8 rounded-xl border border-blue-200 bg-blue-50 p-5"><p className="text-sm font-semibold text-blue-900">💡 <strong>AI Review Settings</strong> are now managed in the <strong>AI Review Settings</strong> page in the sidebar. Go there to set up keywords, concerns, USP points, and tone preferences.</p></div>
   </div>;

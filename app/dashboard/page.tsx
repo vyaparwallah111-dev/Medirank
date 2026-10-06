@@ -6,7 +6,7 @@ import Link from "next/link";
 import { unstable_noStore as noStore } from "next/cache";
 import { redirect } from "next/navigation";
 import { AlertTriangle, ArrowUpRight, ClipboardCheck, LockKeyhole, QrCode, ScanLine, Send, Star } from "lucide-react";
-import { displayDoctorName, getAuthenticatedUser, getCurrentDoctor } from "@/lib/dashboard";
+import { displayDoctorName, formatPersonGreeting, getAuthenticatedUser, getCurrentDoctor } from "@/lib/dashboard";
 import { DirectLinkShare } from "@/components/direct-link-share";
 import { DashboardAutoRefresh } from "@/components/dashboard-auto-refresh";
 import { createAdminClient } from "@/lib/supabase/admin";
