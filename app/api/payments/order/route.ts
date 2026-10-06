@@ -168,13 +168,27 @@ export async function POST(request: Request) {
 
     const admin = createAdminClient() || supabase;
     try {
-      await admin.from("payments").insert({
+      // Safe DB insert that works across both legacy and new migrations
+      const { error: insertErr } = await admin.from("payments").insert({
         doctor_id: doctor.id,
-        plan: plan,
+        plan,
         amount: pricePaise,
         razorpay_order_id: order.id,
         status: "pending",
       });
+
+      if (insertErr) {
+        console.warn("Retrying payment insert with fallback tier format:", insertErr);
+        // Fallback for legacy DB schema with check constraint ('growth', 'premium')
+        const fallbackPlan = (plan === "premium" || plan === "1-year") ? "premium" : "growth";
+        await admin.from("payments").insert({
+          doctor_id: doctor.id,
+          plan: fallbackPlan,
+          amount: pricePaise,
+          razorpay_order_id: order.id,
+          status: "pending",
+        });
+      }
     } catch (dbErr) {
       console.warn("Payment log record note:", dbErr);
     }
