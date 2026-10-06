@@ -3,7 +3,7 @@
 import Script from "next/script";
 import Link from "next/link";
 import { FormEvent, useState } from "react";
-import { BadgeCheck, Check, CreditCard, GraduationCap, LockKeyhole, ShieldCheck, Stethoscope } from "lucide-react";
+import { BadgeCheck, Check, CreditCard, GraduationCap, LockKeyhole, ShieldCheck, Tag, X } from "lucide-react";
 
 type Plan = "1-month" | "3-month" | "6-month" | "1-year" | "growth" | "premium";
 type RazorpayResponse = {
@@ -45,6 +45,13 @@ const details: Record<Plan, { name: string; price: number; period: string }> = {
   premium: { name: "Premium Plan", price: 1999, period: "/ month" },
 };
 
+interface AppliedCoupon {
+  code: string;
+  description?: string;
+  discountAmount: number;
+  finalAmount: number;
+}
+
 export function PaymentCheckout({
   plan,
   initialClinicName,
@@ -62,6 +69,61 @@ export function PaymentCheckout({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // Coupon state
+  const [couponInput, setCouponInput] = useState("");
+  const [validatingCoupon, setValidatingCoupon] = useState(false);
+  const [couponError, setCouponError] = useState("");
+  const [appliedCoupon, setAppliedCoupon] = useState<AppliedCoupon | null>(null);
+
+  const originalPrice = selected.price;
+  const finalPrice = appliedCoupon ? appliedCoupon.finalAmount : originalPrice;
+  const discountAmount = appliedCoupon ? appliedCoupon.discountAmount : 0;
+
+  async function handleApplyCoupon(e?: React.MouseEvent) {
+    if (e) e.preventDefault();
+    const cleanCode = couponInput.trim().toUpperCase();
+    if (!cleanCode) {
+      setCouponError("Please enter a coupon code.");
+      return;
+    }
+
+    setValidatingCoupon(true);
+    setCouponError("");
+
+    try {
+      const res = await fetch("/api/coupons/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: cleanCode, plan }),
+      });
+      const data = await res.json();
+
+      if (!res.ok || !data.valid) {
+        setCouponError(data.error || "Invalid coupon code.");
+        setAppliedCoupon(null);
+      } else {
+        setAppliedCoupon({
+          code: data.code,
+          description: data.description,
+          discountAmount: data.discountAmount,
+          finalAmount: data.finalAmount,
+        });
+        setCouponInput("");
+        setCouponError("");
+      }
+    } catch {
+      setCouponError("Unable to validate coupon right now.");
+    } finally {
+      setValidatingCoupon(false);
+    }
+  }
+
+  function removeCoupon() {
+    setAppliedCoupon(null);
+    setCouponError("");
+    setCouponInput("");
+  }
+
   async function pay(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (loading) return;
@@ -77,10 +139,23 @@ export function PaymentCheckout({
       const orderResponse = await fetch("/api/payments/order", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan, clinicName, mobile, email, isCoaching }),
+        body: JSON.stringify({
+          plan,
+          clinicName,
+          mobile,
+          email,
+          isCoaching,
+          couponCode: appliedCoupon?.code || undefined,
+        }),
       });
       const order = await orderResponse.json();
       if (!orderResponse.ok) throw new Error(order.error || "Unable to create payment order.");
+
+      // 0. Free / 100% Off Coupon direct activation
+      if (order.gateway === "free_coupon" && order.activated) {
+        window.location.assign("/dashboard/success");
+        return;
+      }
 
       // 1. Cashfree Checkout
       if (order.gateway === "cashfree" && order.paymentSessionId) {
@@ -149,10 +224,29 @@ export function PaymentCheckout({
             </div>
             <p className="mt-8 text-sm font-bold uppercase tracking-[.18em] text-slate-400">Your plan</p>
             <h1 className="mt-2 text-3xl font-extrabold">{selected.name}</h1>
-            <div className="mt-5 flex items-end gap-2">
-              <span className="text-5xl font-extrabold">₹{selected.price.toLocaleString("en-IN")}</span>
-              <span className="pb-1 text-slate-400">{selected.period}</span>
+            
+            <div className="mt-5 flex flex-col gap-1">
+              <div className="flex items-end gap-2">
+                <span className="text-5xl font-extrabold">₹{finalPrice.toLocaleString("en-IN")}</span>
+                <span className="pb-1 text-slate-400">{selected.period}</span>
+              </div>
+              {appliedCoupon && (
+                <div className="mt-2 flex items-center gap-2 text-xs font-bold text-emerald-400">
+                  <span className="line-through text-slate-500">₹{originalPrice.toLocaleString("en-IN")}</span>
+                  <span>(You save ₹{discountAmount.toLocaleString("en-IN")})</span>
+                </div>
+              )}
             </div>
+
+            {appliedCoupon && (
+              <div className="mt-5 rounded-xl border border-emerald-500/30 bg-emerald-950/40 p-3 text-xs text-emerald-300">
+                <p className="font-extrabold flex items-center gap-1.5">
+                  <Tag size={13} /> {appliedCoupon.code} Applied
+                </p>
+                <p className="text-[11px] text-emerald-400/80 mt-0.5">{appliedCoupon.description}</p>
+              </div>
+            )}
+
             <ul className="mt-9 space-y-4 text-sm text-slate-300">
               {[
                 "Instant account activation after verification",
@@ -232,6 +326,61 @@ export function PaymentCheckout({
                 />
               </div>
 
+              {/* Coupon Code Input Card */}
+              <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-600 flex items-center gap-1.5 mb-2">
+                  <Tag size={13} className="text-[#0A4C95]" /> Have a Promo / Coupon Code?
+                </label>
+                
+                {appliedCoupon ? (
+                  <div className="flex items-center justify-between rounded-xl border border-emerald-300 bg-emerald-50 px-3.5 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="grid h-6 w-6 place-items-center rounded-full bg-emerald-600 text-white text-xs font-black">✓</span>
+                      <div>
+                        <p className="text-xs font-extrabold text-emerald-950">{appliedCoupon.code} Applied</p>
+                        <p className="text-[11px] font-semibold text-emerald-700">Saved ₹{appliedCoupon.discountAmount.toLocaleString("en-IN")}</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={removeCoupon}
+                      className="text-xs font-bold text-red-600 hover:text-red-800 flex items-center gap-0.5"
+                    >
+                      <X size={14} /> Remove
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={couponInput}
+                      onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
+                      placeholder="e.g. LAUNCH50, SAVE200"
+                      className="input min-h-10 flex-1 uppercase tracking-wider font-semibold text-sm bg-white"
+                      disabled={validatingCoupon}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleApplyCoupon();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleApplyCoupon}
+                      disabled={validatingCoupon || !couponInput.trim()}
+                      className="rounded-xl bg-[#0A4C95] px-4 text-xs font-bold text-white transition hover:bg-blue-900 disabled:opacity-50 min-h-10"
+                    >
+                      {validatingCoupon ? "Checking…" : "Apply"}
+                    </button>
+                  </div>
+                )}
+
+                {couponError && (
+                  <p className="mt-2 text-xs font-bold text-red-600">{couponError}</p>
+                )}
+              </div>
+
               {error && (
                 <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">
                   {error}
@@ -248,10 +397,15 @@ export function PaymentCheckout({
                     <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
                     Processing securely…
                   </>
+                ) : finalPrice === 0 ? (
+                  <>
+                    <LockKeyhole aria-hidden="true" size={19} />
+                    Activate 100% Free Plan Now
+                  </>
                 ) : (
                   <>
                     <LockKeyhole aria-hidden="true" size={19} />
-                    Pay ₹{selected.price.toLocaleString("en-IN")} Securely
+                    Pay ₹{finalPrice.toLocaleString("en-IN")} Securely
                   </>
                 )}
               </button>

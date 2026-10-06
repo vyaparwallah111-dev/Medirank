@@ -121,6 +121,10 @@ export default async function Dashboard() {
   const isStarter = (doctor.subscription_tier?.trim().toLowerCase() || "starter") === "starter" && !doctor.plan_expires_at && !isTrial;
   const isGrowth = doctor.subscription_tier?.trim().toLowerCase() === "growth" || doctor.subscription_tier?.trim().toLowerCase() === "premium" || isTrial;
 
+  const isCoaching = doctor.business_type === 'coaching';
+  const personGreeting = formatPersonGreeting(doctor.doctor_name, isCoaching);
+  const greetingTitle = `Good morning, ${personGreeting}`;
+
   const trialBanner = isTrial && !isExpired ? (
     <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-blue-200 bg-gradient-to-r from-blue-50 to-indigo-50 p-4 shadow-sm">
       <div className="flex items-center gap-3">
@@ -149,9 +153,6 @@ export default async function Dashboard() {
     </div>
   ) : null;
 
-  const isCoaching = doctor.business_type === 'coaching';
-  const personGreeting = formatPersonGreeting(doctor.doctor_name, isCoaching);
-  const greetingTitle = `Good morning, ${personGreeting}`;
   const subtitle = isStarter
     ? "Your Starter plan usage at a glance."
     : isTrial

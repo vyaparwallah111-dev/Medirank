@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { getCashfreeConfig, createCashfreeOrder } from "@/lib/cashfree";
+import { validateAndCalculateCoupon } from "@/lib/coupons";
 
 export const runtime = "nodejs";
 
@@ -12,6 +14,15 @@ const pricesInRupees: Record<string, number> = {
   "1-year": 2999,
   growth: 999,
   premium: 1999,
+};
+
+const planDaysMap: Record<string, number> = {
+  "1-month": 30,
+  "3-month": 90,
+  "6-month": 180,
+  "1-year": 365,
+  growth: 30,
+  premium: 30,
 };
 
 export async function POST(request: Request) {
@@ -28,6 +39,7 @@ export async function POST(request: Request) {
     const contactName = String(body.clinicName ?? "").trim();
     const contactEmail = String(body.email ?? "").trim();
     const contactMobile = String(body.mobile ?? "").trim();
+    const couponCode = String(body.couponCode ?? "").trim().toUpperCase();
 
     if (!contactName || !contactEmail || !contactMobile) {
       return NextResponse.json({ error: "All billing contact fields are required." }, { status: 400 });
@@ -36,7 +48,61 @@ export async function POST(request: Request) {
     const { data: doctor } = await supabase.from("doctors").select("id,clinic_name,doctor_name").eq("auth_user_id", user.id).maybeSingle();
     if (!doctor) return NextResponse.json({ error: "Complete your profile before upgrading." }, { status: 409 });
 
-    const priceRupees = pricesInRupees[plan];
+    const originalPriceRupees = pricesInRupees[plan];
+    
+    // Server-Side Coupon Validation
+    let priceRupees = originalPriceRupees;
+    let appliedCouponCode: string | null = null;
+
+    if (couponCode) {
+      const couponResult = validateAndCalculateCoupon(couponCode, originalPriceRupees, plan);
+      if (couponResult.isValid) {
+        priceRupees = couponResult.finalAmount;
+        appliedCouponCode = couponCode;
+      } else {
+        return NextResponse.json({ error: couponResult.error || "Invalid coupon code." }, { status: 400 });
+      }
+    }
+
+    // 100% Free / VIP Coupon: Activate immediately without payment gateway
+    if (priceRupees === 0) {
+      const days = planDaysMap[plan] || 30;
+      const planStartedAt = new Date();
+      const planExpiresAt = new Date(planStartedAt.getTime() + days * 24 * 60 * 60 * 1000);
+      const tier = plan === "premium" || plan === "1-year" ? "premium" : "growth";
+
+      const admin = createAdminClient() || supabase;
+      const { error: updateError } = await admin.from("doctors").update({
+        plan,
+        subscription_tier: tier,
+        plan_started_at: planStartedAt.toISOString(),
+        plan_expires_at: planExpiresAt.toISOString(),
+        total_scans_used: 0,
+      }).eq("id", doctor.id);
+
+      if (updateError) {
+        console.error("Free coupon activation failed:", updateError);
+        return NextResponse.json({ error: "Failed to activate coupon subscription." }, { status: 500 });
+      }
+
+      try {
+        await admin.from("payments").insert({
+          doctor_id: doctor.id,
+          amount: 0,
+          status: "success",
+        });
+      } catch (logErr) {
+        console.warn("Free payment log note:", logErr);
+      }
+
+      return NextResponse.json({
+        gateway: "free_coupon",
+        activated: true,
+        amount: 0,
+        orderId: `free_${doctor.id.slice(0, 8)}_${Date.now()}`,
+      });
+    }
+
     const pricePaise = priceRupees * 100;
     const orderRefId = `order_${doctor.id.slice(0, 8)}_${Date.now()}`;
 
@@ -59,10 +125,11 @@ export async function POST(request: Request) {
           customerPhone: contactMobile,
           returnUrl,
           notifyUrl,
-          orderNote: `MediRank Subscription - ${plan}`,
+          orderNote: `MediRank Subscription - ${plan}${appliedCouponCode ? ` (Coupon: ${appliedCouponCode})` : ""}`,
           orderTags: {
             doctor_id: doctor.id,
             plan,
+            coupon: appliedCouponCode || "none",
           },
         });
 
