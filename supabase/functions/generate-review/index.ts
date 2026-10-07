@@ -294,7 +294,7 @@ Deno.serve(async(req)=>{
 
     const dbStartMs=Date.now();
     const [doctorResult,aiSettingsResult,keywordsResult,recentReviewsResult]=await Promise.allSettled([
-      db.from('doctors').select('id,doctor_name,clinic_name,city,specialization,knowledge_base,plan_expires_at,business_type,business_category').eq('id',doctorId).eq('is_active',true).maybeSingle(),
+      db.from('doctors').select('id,doctor_name,clinic_name,city,specialization,knowledge_base,plan_expires_at').eq('id',doctorId).eq('is_active',true).maybeSingle(),
       db.from('doctor_ai_settings').select('*').eq('doctor_id',doctorId).maybeSingle(),
       db.from('doctor_keywords').select('keyword').eq('doctor_id',doctorId),
       db.from('generated_reviews').select('content').eq('doctor_id',doctorId).order('created_at',{ascending:false}).limit(15),
@@ -302,14 +302,21 @@ Deno.serve(async(req)=>{
     const dbMs=Date.now()-dbStartMs;
     console.log(`⏱️  DB queries: ${dbMs}ms`);
 
-    const doctor=(doctorResult.status==='fulfilled'?doctorResult.value.data:null);
+    let doctor=(doctorResult.status==='fulfilled'?doctorResult.value.data:null);
+    if(!doctor){
+      const fallback=await db.from('doctors').select('id,doctor_name,clinic_name,city,specialization').eq('id',doctorId).maybeSingle();
+      doctor=fallback.data;
+    }
+
     if(!doctor){
       console.error('Doctor not found');
       void logSystemError(db,doctorId,'Doctor not found or inactive');
       return fail('not_found',404);
     }
 
-    const isCoaching = doctor.business_type === 'coaching';
+    const isCoaching = /coaching|institute|academy|classes|tuition|education|school|college|vidyapeeth|tutorials|program of achievement|neet|jee|upsc|foundation|learning|faculty|teacher|student/i.test(
+      `${doctor.clinic_name || ''} ${doctor.doctor_name || ''} ${doctor.specialization || ''}`
+    );
     const targetCount = TARGET_COUNT;
 
     // 1. Hardening: Reject generation if clinic plan/trial has expired
