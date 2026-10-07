@@ -25,25 +25,7 @@ const emptySettings: AISettings = {
   tone_preference: 'professional',
 };
 
-const priorityMeta: Array<{ key: Priority; label: string; placeholder: string; help: string; icon: string }> = [
-  { key: 'high', label: 'HIGH PRIORITY', placeholder: 'root canal treatment', help: '100% included in reviews. Mentioned 2+ times naturally.', icon: '🎯' },
-  { key: 'medium', label: 'MEDIUM PRIORITY', placeholder: 'friendly staff', help: '50% chance in reviews. Supporting mentions.', icon: '📌' },
-  { key: 'low', label: 'LOW PRIORITY', placeholder: 'affordable pricing', help: '20% chance in reviews. Light-touch mentions.', icon: '💡' },
-];
-
-const toneOptions: Array<{ value: Tone; label: string; description: string }> = [
-  { value: 'professional', label: 'Professional', description: 'Doctor-focused, direct approach' },
-  { value: 'casual', label: 'Casual', description: 'Relaxed, conversational tone' },
-  { value: 'warm', label: 'Warm', description: 'Personal, caring approach' },
-  { value: 'formal', label: 'Formal', description: 'Structured, polished language' },
-  { value: 'conversational', label: 'Conversational', description: 'Natural, friendly chat style' },
-];
-
-// Handles legacy double/triple-JSON-encoded values from the corrupted-data bug (a string value like
-// '["fear of pain"]' stored where a real array should be) by trying JSON.parse first, recursively,
-// before falling back to comma-splitting plain text. Without this, a corrupted value gets naively
-// comma-split into fragments still containing literal brackets/quotes, which then get saved back as
-// "new" data - compounding the corruption on every save/reload cycle instead of fixing it.
+// Handles legacy double/triple-JSON-encoded values from the corrupted-data bug
 const toList = (value: unknown, depth = 0): string[] => {
   if (depth > 5) return [];
   if (Array.isArray(value)) return value.flatMap((item) => typeof item === 'string' ? [item.trim()] : toList(item, depth + 1)).filter(Boolean);
@@ -98,11 +80,69 @@ function KeywordEditor({ label, icon, placeholder, help, values, onChange }: { l
   </div>;
 }
 
-export function AIReviewSettingsConsolidated({ doctorId }: { doctorId: string }) {
+export function AIReviewSettingsConsolidated({
+  doctorId,
+  isCoaching = false,
+}: {
+  doctorId: string;
+  isCoaching?: boolean;
+}) {
   const [settings, setSettings] = useState<AISettings>(emptySettings);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const priorityMeta: Array<{ key: Priority; label: string; placeholder: string; help: string; icon: string }> = [
+    {
+      key: 'high',
+      label: 'HIGH PRIORITY',
+      placeholder: isCoaching ? 'e.g. concept clarity, doubt clearing' : 'e.g. root canal treatment',
+      help: isCoaching ? '100% included in reviews. Mentioned 2+ times naturally.' : '100% included in reviews. Mentioned 2+ times naturally.',
+      icon: '🎯',
+    },
+    {
+      key: 'medium',
+      label: 'MEDIUM PRIORITY',
+      placeholder: isCoaching ? 'e.g. supportive faculty, test series' : 'e.g. friendly staff',
+      help: '50% chance in reviews. Supporting mentions.',
+      icon: '📌',
+    },
+    {
+      key: 'low',
+      label: 'LOW PRIORITY',
+      placeholder: isCoaching ? 'e.g. affordable fees, library & AC classroom' : 'e.g. affordable pricing',
+      help: '20% chance in reviews. Light-touch mentions.',
+      icon: '💡',
+    },
+  ];
+
+  const toneOptions: Array<{ value: Tone; label: string; description: string }> = [
+    {
+      value: 'professional',
+      label: 'Professional',
+      description: isCoaching ? 'Teacher & mentor-focused, direct academic approach' : 'Doctor-focused, direct approach',
+    },
+    {
+      value: 'casual',
+      label: 'Casual',
+      description: isCoaching ? 'Relaxed, relatable student tone' : 'Relaxed, conversational tone',
+    },
+    {
+      value: 'warm',
+      label: 'Warm',
+      description: isCoaching ? 'Encouraging, supportive mentorship approach' : 'Personal, caring approach',
+    },
+    {
+      value: 'formal',
+      label: 'Formal',
+      description: 'Structured, polished language',
+    },
+    {
+      value: 'conversational',
+      label: 'Conversational',
+      description: isCoaching ? 'Natural, friendly student chat style' : 'Natural, friendly chat style',
+    },
+  ];
 
   useEffect(() => {
     let active = true;
@@ -164,7 +204,11 @@ export function AIReviewSettingsConsolidated({ doctorId }: { doctorId: string })
       <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-blue-50 text-brand"><Brain size={24} /></div>
       <div>
         <h1 className="text-3xl font-extrabold">AI Review Settings</h1>
-        <p className="mt-2 text-slate-500">Configure how AI generates personalized reviews for your clinic.</p>
+        <p className="mt-2 text-slate-500">
+          {isCoaching
+            ? 'Configure how AI generates personalized reviews for your coaching / institute.'
+            : 'Configure how AI generates personalized reviews for your clinic.'}
+        </p>
       </div>
     </div>
 
@@ -175,7 +219,11 @@ export function AIReviewSettingsConsolidated({ doctorId }: { doctorId: string })
           <Target size={22} className="text-orange-500" />
           <div>
             <h2 className="text-xl font-bold">Review Keywords</h2>
-            <p className="text-sm text-slate-500 mt-1">Manage treatment highlights and clinic strengths by priority level.</p>
+            <p className="text-sm text-slate-500 mt-1">
+              {isCoaching
+                ? 'Manage subject highlights and coaching strengths by priority level.'
+                : 'Manage treatment highlights and clinic strengths by priority level.'}
+            </p>
           </div>
         </div>
         <div className="grid gap-4">
@@ -198,32 +246,44 @@ export function AIReviewSettingsConsolidated({ doctorId }: { doctorId: string })
         <div className="flex items-center gap-3 mb-6">
           <MapPin size={22} className="text-blue-500" />
           <div>
-            <h2 className="text-xl font-bold">Service Areas</h2>
-            <p className="text-sm text-slate-500 mt-1">Define primary and secondary locations for your clinic.</p>
+            <h2 className="text-xl font-bold">{isCoaching ? 'Branch & Locations' : 'Service Areas'}</h2>
+            <p className="text-sm text-slate-500 mt-1">
+              {isCoaching
+                ? 'Define primary and secondary locations for your institute / coaching.'
+                : 'Define primary and secondary locations for your clinic.'}
+            </p>
           </div>
         </div>
         <div className="grid gap-5 sm:grid-cols-2">
           <div>
-            <label className="label">Primary Area</label>
+            <label className="label">{isCoaching ? 'Primary Branch / Area' : 'Primary Area'}</label>
             <input
               value={primaryArea}
               onChange={(event) => setSettings((current) => ({ ...current, target_areas: { ...current.target_areas, primary: event.target.value.trim() ? [event.target.value] : [] } }))}
               className="input mt-2"
-              placeholder="e.g., Boring Road, Patna"
+              placeholder={isCoaching ? 'e.g., Kankarbagh, Patna' : 'e.g., Boring Road, Patna'}
               maxLength={90}
             />
-            <p className="mt-1 text-xs text-slate-400">Main clinic location for referencing in reviews</p>
+            <p className="mt-1 text-xs text-slate-400">
+              {isCoaching
+                ? 'Main institute branch location for referencing in reviews'
+                : 'Main clinic location for referencing in reviews'}
+            </p>
           </div>
           <div>
-            <label className="label">Secondary Area</label>
+            <label className="label">{isCoaching ? 'Secondary Branch / Area' : 'Secondary Area'}</label>
             <input
               value={secondaryArea}
               onChange={(event) => setSettings((current) => ({ ...current, target_areas: { ...current.target_areas, secondary: event.target.value.trim() ? [event.target.value] : [] } }))}
               className="input mt-2"
-              placeholder="e.g., Phulwari Sharif"
+              placeholder={isCoaching ? 'e.g., Boring Road Branch' : 'e.g., Phulwari Sharif'}
               maxLength={90}
             />
-            <p className="mt-1 text-xs text-slate-400">Optional secondary location for occasional mentions</p>
+            <p className="mt-1 text-xs text-slate-400">
+              {isCoaching
+                ? 'Optional secondary branch for occasional mentions'
+                : 'Optional secondary location for occasional mentions'}
+            </p>
           </div>
         </div>
       </section>
@@ -233,30 +293,42 @@ export function AIReviewSettingsConsolidated({ doctorId }: { doctorId: string })
         <div className="flex items-center gap-3 mb-6">
           <Sparkles size={22} className="text-purple-500" />
           <div>
-            <h2 className="text-xl font-bold">Patient Experience</h2>
-            <p className="text-sm text-slate-500 mt-1">Add concerns to address and unique strengths to highlight.</p>
+            <h2 className="text-xl font-bold">{isCoaching ? 'Student & Parent Experience' : 'Patient Experience'}</h2>
+            <p className="text-sm text-slate-500 mt-1">
+              {isCoaching
+                ? 'Add student concerns to address and unique institute strengths to highlight.'
+                : 'Add concerns to address and unique strengths to highlight.'}
+            </p>
           </div>
         </div>
         <div className="grid gap-6 sm:grid-cols-2">
           <div>
-            <label className="label">Common Patient Concerns</label>
+            <label className="label">{isCoaching ? 'Common Student / Parent Concerns' : 'Common Patient Concerns'}</label>
             <p className="text-xs text-slate-400 mt-1">Natural mentions in positive reviews (4-5 stars)</p>
             <textarea
               value={settings.patient_concerns.join('\n')}
               onChange={(event) => setSettings((current) => ({ ...current, patient_concerns: splitLines(event.target.value) }))}
               className="input mt-3 min-h-32 resize-y"
-              placeholder="fear of pain&#10;treatment cost&#10;long waiting times"
+              placeholder={
+                isCoaching
+                  ? 'doubt solving delay\nexam preparation stress\nconcept clarity issues\nsyllabus completion'
+                  : 'fear of pain\ntreatment cost\nlong waiting times'
+              }
               maxLength={700}
             />
           </div>
           <div>
-            <label className="label">Unique Selling Points</label>
+            <label className="label">{isCoaching ? 'Unique Institute Strengths (USPs)' : 'Unique Selling Points'}</label>
             <p className="text-xs text-slate-400 mt-1">Natural weaving into reviews (1 mention per review)</p>
             <textarea
               value={settings.usp_points.join('\n')}
               onChange={(event) => setSettings((current) => ({ ...current, usp_points: splitLines(event.target.value) }))}
               className="input mt-3 min-h-32 resize-y"
-              placeholder="digital X-ray setup&#10;painless extraction technique&#10;24/7 emergency availability"
+              placeholder={
+                isCoaching
+                  ? 'experienced IIT/Doctor faculty\ndaily practice problem sheets\nregular weekly test series\nsmart AC classrooms & library'
+                  : 'digital X-ray setup\npainless extraction technique\n24/7 emergency availability'
+              }
               maxLength={700}
             />
           </div>
@@ -266,7 +338,9 @@ export function AIReviewSettingsConsolidated({ doctorId }: { doctorId: string })
       {/* TONE SECTION */}
       <section className="card p-6 sm:p-8">
         <h2 className="text-xl font-bold mb-4">Review Tone</h2>
-        <p className="text-sm text-slate-500 mb-6">Choose how AI should write patient reviews.</p>
+        <p className="text-sm text-slate-500 mb-6">
+          {isCoaching ? 'Choose how AI should write student & parent reviews.' : 'Choose how AI should write patient reviews.'}
+        </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {toneOptions.map((option) => (
             <button
@@ -304,3 +378,4 @@ export function AIReviewSettingsConsolidated({ doctorId }: { doctorId: string })
     )}
   </div>;
 }
+

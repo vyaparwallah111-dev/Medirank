@@ -77,12 +77,11 @@ async function syncAnalyticsEventsFromScans(doctorId:string){
 }
 
 export default async function Dashboard() {
-  noStore();
   const doctor = await getCurrentDoctor();
   const { supabase, user } = await getAuthenticatedUser();
   if (!doctor?.id || !user?.id) redirect("/onboarding");
   if (doctor?.auth_user_id !== user?.id) throw new Error("Forbidden");
-  await syncAnalyticsEventsFromScans(doctor.id);
+  
   const analyticsDb = createAdminClient() || supabase;
   const trendSince=new Date(Date.now()-56*24*60*60*1000).toISOString();
   const todayStartIso=(()=>{const d=new Date();d.setHours(0,0,0,0);return d.toISOString();})();

@@ -1,4 +1,5 @@
 import { getCurrentDoctor, getAuthenticatedUser } from '@/lib/dashboard';
+import { isCoachingProfile } from '@/lib/vertical';
 import { redirect } from 'next/navigation';
 import { AIReviewSettingsConsolidated } from '@/components/ai-review-settings-consolidated';
 
@@ -14,9 +15,12 @@ export default async function AIReviewSettingsPage() {
   if (!doctor?.id || !user?.id) redirect('/onboarding');
   if (doctor?.auth_user_id !== user?.id) throw new Error('Forbidden');
 
+  const isCoaching = isCoachingProfile(doctor);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 px-3 py-8 sm:px-5 sm:py-12">
-      <AIReviewSettingsConsolidated doctorId={doctor.id} />
+      <AIReviewSettingsConsolidated doctorId={doctor.id} isCoaching={isCoaching} />
     </div>
   );
 }
+

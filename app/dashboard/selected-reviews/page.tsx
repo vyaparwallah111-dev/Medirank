@@ -4,6 +4,7 @@ export const revalidate = 0;
 import { redirect } from 'next/navigation';
 import { Star } from 'lucide-react';
 import { getAuthenticatedUser, getCurrentDoctor } from '@/lib/dashboard';
+import { isCoachingProfile } from '@/lib/vertical';
 
 type SelectedReview = {
   id: string;
@@ -19,6 +20,8 @@ export default async function SelectedReviewsPage() {
   if (!doctor?.id || !user?.id) redirect('/onboarding');
   if (doctor.auth_user_id !== user.id) throw new Error('Forbidden');
 
+  const isCoaching = isCoachingProfile(doctor);
+
   const { data, error } = await supabase
     .from('generated_reviews')
     .select('id,content,selected_at,draft_index,generation_metadata')
@@ -31,8 +34,6 @@ export default async function SelectedReviewsPage() {
   const rows = (data ?? []) as SelectedReview[];
   const total = rows.length;
 
-  // Simple aggregation, not full analytics: which draft position gets copied most, and which
-  // keyword shows up most often among what patients actually selected.
   const draftCounts = new Map<number, number>();
   const keywordCounts = new Map<string, number>();
   rows.forEach((row) => {
@@ -46,7 +47,11 @@ export default async function SelectedReviewsPage() {
   return (
     <div className="mx-auto max-w-4xl">
       <h1 className="text-2xl font-extrabold sm:text-3xl">Selected reviews</h1>
-      <p className="mt-2 text-sm leading-6 text-slate-500 sm:text-base">Reviews patients actually copied - a stronger signal than "reviews generated" since this is what most likely got posted to Google.</p>
+      <p className="mt-2 text-sm leading-6 text-slate-500 sm:text-base">
+        {isCoaching
+          ? 'Reviews students & parents actually copied - a stronger signal than "reviews generated" since this is what most likely got posted to Google.'
+          : 'Reviews patients actually copied - a stronger signal than "reviews generated" since this is what most likely got posted to Google.'}
+      </p>
 
       {total > 0 && (topDraft || topKeyword) && (
         <div className="mt-6 grid gap-4 sm:grid-cols-2">
@@ -74,8 +79,13 @@ export default async function SelectedReviewsPage() {
               {keywords.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{keywords.map((keyword) => <span key={keyword} className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-bold text-brand">{keyword}</span>)}</div>}
             </div>
           );
-        }) : <p className="px-4 py-8 text-center text-sm font-semibold text-slate-500 sm:px-6">No reviews have been copied by patients yet.</p>}
+        }) : (
+          <p className="px-4 py-8 text-center text-sm font-semibold text-slate-500 sm:px-6">
+            {isCoaching ? 'No reviews have been copied by students yet.' : 'No reviews have been copied by patients yet.'}
+          </p>
+        )}
       </div>
     </div>
   );
 }
+

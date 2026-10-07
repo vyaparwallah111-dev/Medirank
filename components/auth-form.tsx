@@ -77,11 +77,9 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
       if (!supabase) throw new Error("Supabase is not configured.");
       const { error: sessionError } = await supabase.auth.setSession({ access_token: result.accessToken, refresh_token: result.refreshToken });
       if (sessionError) throw sessionError;
-      router.replace(result.destination);
-      router.refresh();
+      window.location.href = result.destination;
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to verify code.");
-    } finally {
       setLoading(false);
     }
   }

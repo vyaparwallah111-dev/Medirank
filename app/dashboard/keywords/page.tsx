@@ -1,5 +1,7 @@
 import { DashboardKeywordsManager } from '@/components/dashboard-keywords-manager';
 import { getAuthenticatedUser, getCurrentDoctor } from '@/lib/dashboard';
+import { isCoachingProfile } from '@/lib/vertical';
+import { createAdminClient } from '@/lib/supabase/admin';
 import { redirect } from 'next/navigation';
 
 const defaults: Record<string, { keyword: string; category: string }[]> = {
@@ -42,23 +44,16 @@ export default async function Keywords() {
   const { supabase, user } = await getAuthenticatedUser();
   if (!doctor?.id || !user?.id) redirect('/onboarding');
   if (doctor?.auth_user_id !== user?.id) throw new Error('Forbidden');
-  const isCoaching = doctor.business_type === 'coaching';
+  const isCoaching = isCoachingProfile(doctor);
+  const db = createAdminClient() || supabase;
 
-  let { data: items, error } = await supabase.from('doctor_keywords').select('id,keyword,category,is_active').eq('doctor_id', doctor.id).order('created_at');
+  const { data: items, error } = await db
+    .from('doctor_keywords')
+    .select('id,keyword,category,is_active')
+    .eq('doctor_id', doctor.id)
+    .order('created_at');
+
   if (error) throw new Error(error.message);
-  if (!items?.length) {
-    let seed = defaults.default;
-    if (isCoaching) {
-      seed = defaults.coaching;
-    } else {
-      const specialization = (doctor.specialization || '').toLowerCase();
-      const key = Object.keys(defaults).find((k) => specialization.includes(k));
-      seed = defaults[key || 'default'];
-    }
-    const result = await supabase.from('doctor_keywords').insert(seed.map((x) => ({ ...x, doctor_id: doctor.id, is_active: true }))).select('id,keyword,category,is_active');
-    if (result.error) throw new Error(result.error.message);
-    items = result.data;
-  }
 
   return (
     <div className="mx-auto max-w-4xl px-1 sm:px-0">
@@ -67,11 +62,12 @@ export default async function Keywords() {
       </h1>
       <p className="mt-2 text-sm leading-6 text-slate-500 sm:text-base">
         {isCoaching
-          ? 'Manage the subjects, teaching strengths, facilities (e.g. NEET prep, Islamic environment, doubt sessions), and highlights students can pick.'
+          ? 'Manage the subjects, teaching strengths, facilities, and highlights students can pick.'
           : 'Manage the treatment and care highlights patients can choose.'}
       </p>
-      <DashboardKeywordsManager initialItems={items ?? []} businessType={doctor.business_type || 'doctor'} />
+      <DashboardKeywordsManager initialItems={items ?? []} businessType={isCoaching ? 'coaching' : 'doctor'} />
     </div>
   );
 }
+
 

@@ -37,7 +37,14 @@ export function DashboardShell({ children, doctor }: {
         <Logo />
         <nav className="mt-10 space-y-1">
           {nav.map(([Icon, label, href]) => (
-            <Link key={href} href={href} className={`flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold ${pathname === href ? "bg-blue-50 text-brand" : "text-slate-500 hover:bg-slate-50"}`}>
+            <Link
+              key={href}
+              href={href}
+              prefetch={true}
+              className={`flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold transition-all duration-150 ${
+                pathname === href ? "bg-blue-50 text-brand" : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+              }`}
+            >
               <Icon size={19} />{label}
             </Link>
           ))}

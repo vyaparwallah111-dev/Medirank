@@ -13,14 +13,16 @@ export async function middleware(req:NextRequest){
   const protectedPath=pathname.startsWith('/dashboard')||pathname.startsWith('/admin')||pathname.startsWith('/onboarding');
   if(!user&&protectedPath)return NextResponse.redirect(new URL('/login',req.url));
 
+  // Only query database in edge middleware for auth gatekeeper pages:
+  // - /admin/* (to verify is_admin flag)
+  // - /onboarding, /login, /signup (for proper redirection)
+  // For internal /dashboard/* routes, RSC layout & pages handle profile authorization securely with React cache deduplication.
   let profile:{id?:string;is_admin?:boolean;is_active?:boolean}|null=null;
-  if(user&&(protectedPath||pathname==='/login'||pathname==='/signup')){
+  if(user&&(pathname.startsWith('/admin')||pathname.startsWith('/onboarding')||pathname==='/login'||pathname==='/signup')){
     const result=await supabase.from('doctors').select('id,is_admin,is_active').eq('auth_user_id',user.id).maybeSingle();
     profile=result.data;
   }
   if(user&&pathname.startsWith('/admin')&&profile?.is_admin!==true)return NextResponse.redirect(new URL('/login',req.url));
-  if(user&&pathname.startsWith('/dashboard')&&profile?.is_admin===true)return NextResponse.redirect(new URL('/admin/dashboard',req.url));
-  if(user&&pathname.startsWith('/dashboard')&&profile?.is_active===false)return NextResponse.redirect(new URL('/login?blocked=1',req.url));
   if(user&&pathname.startsWith('/onboarding')&&profile?.id)return NextResponse.redirect(new URL('/dashboard',req.url));
   if(user&&(pathname==='/login'||pathname==='/signup')){
     if(profile?.is_active===false)return res;

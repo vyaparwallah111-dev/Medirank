@@ -1,6 +1,6 @@
 import 'server-only';
 import { redirect } from 'next/navigation';
-import { unstable_noStore as noStore } from 'next/cache';
+import { cache } from 'react';
 import { createClient } from '@/lib/supabase/server';
 
 import { isCoachingProfile } from '@/lib/vertical';
@@ -20,16 +20,15 @@ export type Doctor = {
   knowledge_base: { area_name: string; city_name: string; top_services: string[] } | null;
 };
 
-export async function getAuthenticatedUser() {
+export const getAuthenticatedUser = cache(async () => {
   const supabase = createClient();
   if (!supabase) redirect('/login');
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
   return { supabase, user };
-}
+});
 
-export async function getCurrentDoctor(): Promise<Doctor> {
-  noStore();
+export const getCurrentDoctor = cache(async (): Promise<Doctor> => {
   const { supabase, user } = await getAuthenticatedUser();
   const baseFields = 'id,auth_user_id,doctor_name,clinic_name,specialization,slug,gmb_review_link,city,phone,logo_url,plan,is_active';
   const currentFields = `${baseFields},subscription_tier,plan_started_at,plan_expires_at,theme_config,knowledge_base`;
@@ -54,7 +53,7 @@ export async function getCurrentDoctor(): Promise<Doctor> {
   data.business_type = isCoaching ? 'coaching' : 'doctor';
 
   return data as Doctor;
-}
+});
 
 export function displayDoctorName(name: string | null | undefined) {
   return (name || '').replace(/^dr\.?\s*/i, '').trim();

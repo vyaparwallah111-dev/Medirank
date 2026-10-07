@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { LockKeyhole, QrCode } from 'lucide-react';
 import { getAuthenticatedUser, getCurrentDoctor } from '@/lib/dashboard';
+import { isCoachingProfile } from '@/lib/vertical';
 import { QRDownload } from '@/components/qr-download';
 import { CreateQrForm } from '@/components/create-qr-form';
 
@@ -11,6 +12,7 @@ export default async function QRCodePage() {
   const doctor = await getCurrentDoctor();
   const { supabase } = await getAuthenticatedUser();
   if (!doctor?.id) redirect('/onboarding');
+  const isCoaching = isCoachingProfile(doctor);
   const { count, error: qrError } = await supabase.from('qr_codes').select('*', { count: 'exact', head: true }).eq('doctor_id', doctor.id);
   const qrCount = count ?? 0;
   const subscriptionTier = doctor.subscription_tier?.trim().toLowerCase() || 'starter';
@@ -20,8 +22,12 @@ export default async function QRCodePage() {
 
   return (
     <div className="mx-auto max-w-3xl">
-      <h1 className="text-3xl font-extrabold">Your clinic QR code</h1>
-      <p className="mt-2 text-slate-500">Print it, display it, and let happy patients do the rest.</p>
+      <h1 className="text-3xl font-extrabold">{isCoaching ? 'Your institute QR code' : 'Your clinic QR code'}</h1>
+      <p className="mt-2 text-slate-500">
+        {isCoaching
+          ? 'Print it, display it at reception, and let happy students & parents do the rest.'
+          : 'Print it, display it, and let happy patients do the rest.'}
+      </p>
       {starterLimitReached && (
         <div className="mt-6 flex gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">
           <LockKeyhole className="mt-0.5 shrink-0" size={19} />
@@ -36,11 +42,18 @@ export default async function QRCodePage() {
       ) : (
         <div className="card mt-8 p-7 text-center">
           <span className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-blue-50 text-brand"><QrCode size={32} /></span>
-          <h2 className="mt-5 text-xl font-bold">Create your patient review QR</h2>
-          <p className="mt-2 text-sm text-slate-500">Your Starter plan includes one reusable clinic QR code.</p>
+          <h2 className="mt-5 text-xl font-bold">
+            {isCoaching ? 'Create your student review QR' : 'Create your patient review QR'}
+          </h2>
+          <p className="mt-2 text-sm text-slate-500">
+            {isCoaching
+              ? 'Your Starter plan includes one reusable institute QR code.'
+              : 'Your Starter plan includes one reusable clinic QR code.'}
+          </p>
           {qrError ? <p role="alert" className="mt-6 text-sm font-semibold text-red-600">QR service is not ready. Please refresh and try again.</p> : <CreateQrForm />}
         </div>
       )}
     </div>
   );
 }
+
