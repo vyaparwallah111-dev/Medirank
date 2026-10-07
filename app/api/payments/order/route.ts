@@ -7,12 +7,12 @@ import { validateAndCalculateCoupon } from "@/lib/coupons";
 export const runtime = "nodejs";
 
 const pricesInRupees: Record<string, number> = {
-  "1-month": 299,
-  "3-month": 799,
-  "6-month": 1599,
+  "1-month": 699,
+  "3-month": 1999,
+  "6-month": 2999,
   "1-year": 2999,
-  growth: 999,
-  premium: 1999,
+  growth: 1999,
+  premium: 2999,
 };
 
 const planDaysMap: Record<string, number> = {

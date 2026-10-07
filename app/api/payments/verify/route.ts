@@ -81,9 +81,8 @@ export async function POST(request: Request) {
               selectedPlan = rzpOrder.notes.plan;
             } else if (paymentAmount > 0) {
               const rs = paymentAmount / 100;
-              if (rs >= 2900) selectedPlan = "1-year";
-              else if (rs >= 1500) selectedPlan = "6-month";
-              else if (rs >= 700) selectedPlan = "3-month";
+              if (rs >= 2800) selectedPlan = "6-month";
+              else if (rs >= 1800) selectedPlan = "3-month";
               else selectedPlan = "1-month";
             }
           }

@@ -317,10 +317,20 @@ Deno.serve(async(req)=>{
       return fail('plan_expired', 402);
     }
 
-    // 2. Hardening: Rate limiting per doctor (max 60 generations per 10 minutes to prevent API drain loops)
+    // 2. Hardening: Multi-level flood defense against automated Gemini draining attacks
+    const fiveMinutesAgo=new Date(Date.now()-5*60_000).toISOString();
     const tenMinutesAgo=new Date(Date.now()-10*60_000).toISOString();
+
+    // 2a. Per-device rate limit (max 6 generations per 5 minutes per device)
+    const {count:deviceGenerations}=await db.from('review_generation_meta').select('*',{count:'exact',head:true}).eq('device_token',deviceToken).gte('created_at',fiveMinutesAgo);
+    if((deviceGenerations??0)>=6){
+      console.warn('Device rate limit triggered',{deviceToken,doctorId});
+      return fail('rate_limit_exceeded',429);
+    }
+
+    // 2b. Per-doctor rate limit (max 40 generations per 10 minutes)
     const {count:recentDoctorGenerations}=await db.from('review_generation_meta').select('*',{count:'exact',head:true}).eq('doctor_id',doctorId).gte('created_at',tenMinutesAgo);
-    if((recentDoctorGenerations??0)>60){
+    if((recentDoctorGenerations??0)>40){
       console.warn('Rate limit triggered for doctor_id',{doctorId});
       return fail('rate_limit_exceeded',429);
     }
@@ -382,29 +392,31 @@ Deno.serve(async(req)=>{
     const allowEmoji=rating>=4&&Math.random()<0.45;
 
     if (isCoaching) {
-      // COACHING SPECIFIC PROMPT (Optimized for low tokens & 1 student/parent review)
+      // COACHING / INSTITUTE SPECIFIC PROMPT (Strictly focused on Coaching / Institute / School / Academy, NO individual professor/doctor name injection)
       const activeChips = (digest.selected_chips.length ? digest.selected_chips : digest.high_priority_keywords);
-      const chipsString = activeChips.length ? activeChips.map(k => `"${k}"`).join(', ') : 'quality teaching, doubt clearing';
+      const chipsString = activeChips.length ? activeChips.map(k => `"${k}"`).join(', ') : 'quality teaching, doubt clearing sessions, concept clarity';
       
-      prompt = `You are a Google review generator for an educational coaching institute. Generate exactly 1 authentic, genuine first-person review from a student or parent perspective.
+      prompt = `You are a Google review generator for an educational institute, coaching center, school, or academy. Generate exactly 1 authentic, genuine first-person review from a student or parent perspective.
 
-INSTITUTE: ${digest.clinic_name} (${digest.specialization || 'Coaching & Guidance'}) taught by ${digest.doctor_name}, in ${digest.primary_area || digest.city}.
+INSTITUTE: ${digest.clinic_name} (${digest.specialization || 'Coaching & Guidance'}) in ${digest.primary_area || digest.city}.
 RATING: ${rating} star${rating !== 1 ? 's' : ''} | LANGUAGE: ${digest.language === 'hinglish' ? 'natural everyday Hinglish (mix of Hindi & English as Indian students text)' : 'English'}
 ${digest.custom_notes ? `STUDENT EXPERIENCE NOTE: "${digest.custom_notes}"` : ''}
 
 KEY HIGHLIGHTS TO WEAVE NATURALLY: ${chipsString}
 
 PERSPECTIVE & RULES:
-- Write strictly in FIRST PERSON as a student who studies/studied here or a parent ("I joined for preparation...", "My concept clarity improved...", "Sir explains difficult topics very easily...", "The study atmosphere and facilities here are...").
-- Keep it natural, genuine, 3-5 sentences.
-- Avoid generic robotic phrases (e.g. "highly recommended", "top quality", "very satisfied") - make it sound like a real student sharing their actual experience.
+- Write strictly in FIRST PERSON as a student or parent of this institute ("I joined ${digest.clinic_name} for...", "The faculty and teachers here explain concepts very clearly...", "My test scores and confidence improved...", "Doubt solving sessions and study environment at ${digest.clinic_name} are great...").
+- STRICT: Do NOT invent or mention any individual professor, doctor, or director personal name. Focus purely on the Institute name ("${digest.clinic_name}"), its teaching faculty, environment, tests, and study quality.
+- Keep it natural, authentic, 3-4 sentences.
+- Avoid robotic clichés (e.g. "top notch", "highly recommended institute", "very satisfied") - make it sound like a real student sharing real progress.
 
 Return exactly 1 review as JSON: [{"review": "..."}]`;
 
-      simplifiedPrompt = `Write exactly 1 authentic first-person Google review for ${digest.clinic_name} (${digest.specialization || 'Coaching'}) with ${digest.doctor_name}, in ${digest.language === 'hinglish' ? 'natural Hinglish' : 'English'}. Rating: ${rating} stars. Mention: ${chipsString}. Length: 3-4 natural sentences from a student perspective.
+      simplifiedPrompt = `Write exactly 1 authentic first-person Google review for ${digest.clinic_name} (${digest.specialization || 'Coaching & Education'}), in ${digest.language === 'hinglish' ? 'natural Hinglish' : 'English'}. Rating: ${rating} stars. Mention: ${chipsString}.
+STRICT: Do NOT include any individual person or professor name; refer only to the institute ("${digest.clinic_name}") and its teachers/faculties. Length: 3-4 natural sentences from a student/parent perspective.
 Return as JSON: [{"review": "..."}]`;
 
-      minimalPrompt = `Write 1 short natural first-person Google review for ${digest.clinic_name} (${digest.specialization || 'Coaching'}) from a student. Rating: ${rating} stars. Mention ${chipsString}.
+      minimalPrompt = `Write 1 short natural first-person Google review for ${digest.clinic_name} (${digest.specialization || 'Coaching'}) from a student. Rating: ${rating} stars. Mention ${chipsString}. No individual person names, only the institute name.
 Return as JSON: [{"review": "..."}]`;
     } else {
       // DOCTOR SPECIFIC PROMPT (Preserves 3 patient reviews for clinics)

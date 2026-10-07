@@ -65,23 +65,23 @@ export const ACTIVE_COUPONS: Record<string, Coupon> = {
     description: "Flat ₹300 Off on multi-month plans",
     discountType: "flat",
     value: 300,
-    minAmount: 700,
+    minAmount: 1800,
     isActive: true,
   },
   SAVE500: {
     code: "SAVE500",
-    description: "Flat ₹500 Off on half-yearly & annual plans",
+    description: "Flat ₹500 Off on 6-month plans",
     discountType: "flat",
     value: 500,
-    minAmount: 1500,
+    minAmount: 2800,
     isActive: true,
   },
   VIP100: {
     code: "VIP100",
-    description: "100% VIP Free Access",
+    description: "100% VIP Free Access (Internal Admin Only)",
     discountType: "percent",
     value: 100,
-    isActive: true,
+    isActive: false, // Disabled by default for security against brute-force
   },
 };
 

@@ -126,37 +126,37 @@ export default function Home() {
           
           <div className="container-page relative grid items-center gap-10 lg:grid-cols-[1.1fr_.9fr] lg:gap-14">
             <div>
-              <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-blue-200 bg-white px-3.5 py-1.5 text-xs font-bold text-brand shadow-sm sm:text-sm">
+              <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-blue-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-brand shadow-sm sm:text-sm">
                 <Sparkles size={15} className="text-brand shrink-0" />
                 <span>AI Reviews for Healthcare & Education</span>
               </div>
               
-              <h1 className="max-w-2xl text-3xl font-black leading-[1.12] tracking-tight text-slate-950 min-[400px]:text-4xl sm:text-5xl lg:text-6xl">
+              <h1 className="max-w-2xl text-3xl font-bold leading-[1.15] tracking-tight text-slate-950 min-[400px]:text-4xl sm:text-5xl lg:text-6xl">
                 Turn happy visitors into <span className="text-brand">5-star Google reviews.</span>
               </h1>
               
-              <p className="mt-5 max-w-xl text-base leading-relaxed text-slate-700 sm:text-lg sm:leading-8">
-                MediRank helps <b>Clinics, Doctors & Coaching Institutes</b> collect authentic, high-converting Google reviews in under 60 seconds with a simple QR code.
+              <p className="mt-5 max-w-xl text-base leading-relaxed text-slate-950 sm:text-lg sm:leading-8">
+                MediRank helps <b className="font-semibold text-black">Clinics, Doctors & Coaching Institutes</b> collect authentic, high-converting Google reviews in under 60 seconds with a simple QR code.
               </p>
 
               {/* Action Buttons */}
               <div className="mt-7 flex flex-col gap-3 sm:flex-row">
                 <Link
                   href="/signup"
-                  className="btn-primary min-h-12 w-full text-center text-sm font-bold shadow-lg shadow-blue-900/10 sm:w-auto sm:text-base flex items-center justify-center gap-2"
+                  className="btn-primary min-h-12 w-full text-center text-sm font-semibold shadow-lg shadow-blue-900/10 sm:w-auto sm:text-base flex items-center justify-center gap-2"
                 >
                   Create Your Free QR Code <ArrowRight size={18} />
                 </Link>
                 <Link
                   href="/r/dr-mehta"
-                  className="btn-secondary min-h-12 w-full text-center text-sm font-bold sm:w-auto sm:text-base flex items-center justify-center gap-2"
+                  className="btn-secondary min-h-12 w-full text-center text-sm font-semibold sm:w-auto sm:text-base flex items-center justify-center gap-2"
                 >
                   Try Live Demo
                 </Link>
               </div>
 
               {/* Trust Badges */}
-              <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs font-bold text-slate-700 sm:text-sm">
+              <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs font-medium text-slate-950 sm:text-sm">
                 {["No app download", "Setup in 2 minutes", "For Clinics & Institutes", "100% Google Safe"].map((item) => (
                   <span key={item} className="flex items-center gap-1.5">
                     <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
@@ -171,15 +171,15 @@ export default function Home() {
               <div className="card relative overflow-hidden p-5 shadow-2xl shadow-blue-900/10 sm:p-7 border border-slate-200">
                 <div className="flex items-center justify-between border-b border-slate-100 pb-4">
                   <div className="flex items-center gap-3">
-                    <span className="grid h-10 w-10 place-items-center rounded-xl bg-blue-50 text-brand font-black text-sm">
+                    <span className="grid h-10 w-10 place-items-center rounded-xl bg-blue-50 text-brand font-bold text-sm">
                       MR
                     </span>
                     <div>
-                      <p className="font-extrabold text-sm sm:text-base text-slate-900">Vyapar Wallah Hub</p>
-                      <p className="text-xs font-medium text-slate-500">Live Reputation Monitor</p>
+                      <p className="font-bold text-sm sm:text-base text-slate-950">Vyapar Wallah Hub</p>
+                      <p className="text-xs font-medium text-slate-900">Live Reputation Monitor</p>
                     </div>
                   </div>
-                  <span className="rounded-xl bg-emerald-50 px-2.5 py-1 text-xs font-extrabold text-emerald-700">
+                  <span className="rounded-xl bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">
                     +24% Growth
                   </span>
                 </div>
@@ -187,21 +187,21 @@ export default function Home() {
                 <div className="grid grid-cols-2 gap-3 py-4">
                   <div className="rounded-2xl bg-blue-50/70 p-3.5 sm:p-4">
                     <ScanLine className="text-brand size-5" />
-                    <p className="mt-2 text-2xl font-black text-slate-900 sm:text-3xl">1,480</p>
-                    <p className="text-xs font-bold text-slate-600">Total QR Scans</p>
+                    <p className="mt-2 text-2xl font-bold text-slate-950 sm:text-3xl">1,480</p>
+                    <p className="text-xs font-medium text-slate-950">Total QR Scans</p>
                   </div>
                   <div className="rounded-2xl bg-orange-50/70 p-3.5 sm:p-4">
                     <Star className="fill-orange text-orange size-5" />
-                    <p className="mt-2 text-2xl font-black text-slate-900 sm:text-3xl">492</p>
-                    <p className="text-xs font-bold text-slate-600">5★ Reviews Posted</p>
+                    <p className="mt-2 text-2xl font-bold text-slate-950 sm:text-3xl">492</p>
+                    <p className="text-xs font-medium text-slate-950">5★ Reviews Posted</p>
                   </div>
                 </div>
 
                 <div className="rounded-2xl bg-[#0A4C95] p-4 text-white sm:p-5">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-xs font-semibold text-blue-200">Visitor-to-Review Conversion</p>
-                      <p className="mt-0.5 text-2xl font-black text-white sm:text-3xl">33.2%</p>
+                      <p className="text-xs font-medium text-blue-100">Visitor-to-Review Conversion</p>
+                      <p className="mt-0.5 text-2xl font-bold text-white sm:text-3xl">33.2%</p>
                     </div>
                     <div className="flex h-11 items-end gap-1 sm:h-13">
                       {[30, 45, 38, 60, 52, 75, 68, 92].map((h, i) => (
@@ -218,8 +218,8 @@ export default function Home() {
                   <Star fill="currentColor" size={19} />
                 </div>
                 <div>
-                  <p className="text-xs font-black text-slate-900 sm:text-sm">New 5-Star Review!</p>
-                  <p className="text-[11px] font-semibold text-slate-500">Google Maps · Just now</p>
+                  <p className="text-xs font-bold text-slate-950 sm:text-sm">New 5-Star Review!</p>
+                  <p className="text-[11px] font-medium text-slate-900">Google Maps · Just now</p>
                 </div>
               </div>
             </div>
@@ -236,8 +236,8 @@ export default function Home() {
                   <Search size={18} />
                 </span>
                 <div className="min-w-0">
-                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Google Maps Local Search</p>
-                  <p className="font-extrabold text-sm text-slate-900 truncate">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-800">Google Maps Local Search</p>
+                  <p className="font-bold text-sm text-slate-950 truncate">
                     best clinic & coaching near me
                   </p>
                 </div>
@@ -246,7 +246,7 @@ export default function Home() {
               <div className="mt-4 space-y-2.5">
                 {/* #1 Result */}
                 <div className="relative overflow-hidden rounded-2xl border-2 border-[#F37021] bg-orange-50/20 p-3.5 sm:p-4 shadow-md">
-                  <span className="absolute right-3 top-3 rounded-full bg-[#F37021] px-2 py-0.5 text-[9px] font-black uppercase text-white">
+                  <span className="absolute right-3 top-3 rounded-full bg-[#F37021] px-2 py-0.5 text-[9px] font-bold uppercase text-white">
                     Rank #1
                   </span>
                   <div className="flex gap-3">
@@ -254,14 +254,14 @@ export default function Home() {
                       <Sparkles size={19} />
                     </span>
                     <div>
-                      <p className="font-extrabold text-sm text-slate-950 sm:text-base">Your Clinic / Institute</p>
-                      <div className="mt-1 flex items-center gap-1 text-xs font-bold text-[#F37021]">
+                      <p className="font-bold text-sm text-slate-950 sm:text-base">Your Clinic / Institute</p>
+                      <div className="mt-1 flex items-center gap-1 text-xs font-semibold text-[#F37021]">
                         4.9 {Array.from({ length: 5 }).map((_, i) => (
                           <Star key={i} size={12} fill="currentColor" />
                         ))}
-                        <span className="ml-1 text-slate-700">(480+ Google Reviews)</span>
+                        <span className="ml-1 text-slate-950 font-medium">(480+ Google Reviews)</span>
                       </div>
-                      <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-slate-500">
+                      <p className="mt-1 flex items-center gap-1 text-[11px] font-medium text-slate-900">
                         <MapPin size={12} /> Open · 450 m away · Highly Rated
                       </p>
                     </div>
@@ -274,31 +274,31 @@ export default function Home() {
                   ["Competitor Profile B", "3.9", "22"],
                 ].map(([name, rating, reviews], index) => (
                   <div key={name} className="flex items-center gap-3 rounded-2xl border border-slate-100 bg-slate-50/50 p-3">
-                    <span className="grid h-8 w-8 place-items-center rounded-lg bg-slate-200 text-xs font-black text-slate-600">
+                    <span className="grid h-8 w-8 place-items-center rounded-lg bg-slate-200 text-xs font-bold text-slate-800">
                       {index + 2}
                     </span>
                     <div className="min-w-0">
-                      <p className="font-bold text-xs text-slate-700 truncate">{name}</p>
-                      <p className="text-[11px] font-semibold text-amber-600">
-                        ★ {rating} <span className="text-slate-400">({reviews} reviews)</span>
+                      <p className="font-semibold text-xs text-slate-950 truncate">{name}</p>
+                      <p className="text-[11px] font-medium text-slate-900">
+                        ★ {rating} <span className="text-slate-700">({reviews} reviews)</span>
                       </p>
                     </div>
                   </div>
                 ))}
               </div>
 
-              <div className="absolute -right-2 -top-3 flex items-center gap-1.5 rounded-xl bg-[#0A4C95] px-3 py-2 text-xs font-bold text-white shadow-lg sm:-right-4">
+              <div className="absolute -right-2 -top-3 flex items-center gap-1.5 rounded-xl bg-[#0A4C95] px-3 py-2 text-xs font-semibold text-white shadow-lg sm:-right-4">
                 <TrendingUp size={15} className="text-[#F37021]" /> Top Local Visibility
               </div>
             </div>
 
             {/* Text details */}
             <div>
-              <p className="text-xs font-black uppercase tracking-[.18em] text-[#F37021]">Why Reputation Matters</p>
-              <h2 className="mt-3 text-2xl font-black leading-tight text-slate-950 sm:text-4xl">
+              <p className="text-xs font-bold uppercase tracking-wider text-[#F37021]">Why Reputation Matters</p>
+              <h2 className="mt-3 text-2xl font-bold leading-tight text-slate-950 sm:text-4xl">
                 Google Reviews Drive 80%+ of Local Customer Choices
               </h2>
-              <p className="mt-4 text-base leading-relaxed text-slate-600">
+              <p className="mt-4 text-base leading-relaxed text-slate-950">
                 When people search for doctors, dental care, NEET/JEE coaching, or local tutors, Google Maps is their first choice. Fresh, genuine reviews with keyword mentions directly boost your local search ranking and convert searchers into walk-in inquiries.
               </p>
 
@@ -309,8 +309,8 @@ export default function Home() {
                       <Icon size={19} />
                     </span>
                     <div>
-                      <h3 className="text-sm sm:text-base font-extrabold text-slate-900">{title}</h3>
-                      <p className="mt-0.5 text-xs sm:text-sm leading-relaxed text-slate-600">{copy}</p>
+                      <h3 className="text-sm sm:text-base font-bold text-slate-950">{title}</h3>
+                      <p className="mt-0.5 text-xs sm:text-sm leading-relaxed text-slate-950 font-normal">{copy}</p>
                     </div>
                   </div>
                 ))}
@@ -323,11 +323,11 @@ export default function Home() {
         <section id="features" className="bg-slate-50/70 py-16 sm:py-24 border-t border-slate-200/60">
           <div className="container-page">
             <div className="mx-auto max-w-3xl text-center">
-              <p className="text-xs font-black uppercase tracking-[.18em] text-[#F37021]">Designed for Measurable Growth</p>
-              <h2 className="mt-3 text-2xl font-black text-slate-950 sm:text-4xl">
+              <p className="text-xs font-bold uppercase tracking-wider text-[#F37021]">Designed for Measurable Growth</p>
+              <h2 className="mt-3 text-2xl font-bold text-slate-950 sm:text-4xl">
                 How MediRank Powers Your Reputation
               </h2>
-              <p className="mx-auto mt-3 max-w-2xl text-sm sm:text-base text-slate-600">
+              <p className="mx-auto mt-3 max-w-2xl text-sm sm:text-base text-slate-950">
                 A simple 3-step automated workflow that fits naturally at the end of any clinic visit or classroom session.
               </p>
             </div>
@@ -341,9 +341,9 @@ export default function Home() {
                   <span className={`grid h-11 w-11 place-items-center rounded-xl text-white ${index % 2 ? "bg-[#F37021]" : "bg-[#0A4C95]"}`}>
                     <Icon size={20} />
                   </span>
-                  <p className="mt-4 text-[11px] font-black uppercase tracking-wider text-[#F37021]">{eyebrow}</p>
-                  <h3 className="mt-1.5 text-base font-black text-slate-900">{title}</h3>
-                  <p className="mt-2 text-xs sm:text-sm leading-relaxed text-slate-600">{copy}</p>
+                  <p className="mt-4 text-[11px] font-bold uppercase tracking-wider text-[#F37021]">{eyebrow}</p>
+                  <h3 className="mt-1.5 text-base font-bold text-slate-950">{title}</h3>
+                  <p className="mt-2 text-xs sm:text-sm leading-relaxed text-slate-950 font-normal">{copy}</p>
                 </article>
               ))}
             </div>
@@ -354,11 +354,11 @@ export default function Home() {
         <section className="bg-white py-16 sm:py-24 border-t border-slate-100">
           <div className="container-page">
             <div className="mx-auto max-w-3xl text-center">
-              <p className="text-xs font-black uppercase tracking-[.18em] text-[#F37021]">Zero Friction Experience</p>
-              <h2 className="mt-3 text-2xl font-black text-slate-950 sm:text-4xl">
+              <p className="text-xs font-bold uppercase tracking-wider text-[#F37021]">Zero Friction Experience</p>
+              <h2 className="mt-3 text-2xl font-bold text-slate-950 sm:text-4xl">
                 How It Works in 3 Easy Steps
               </h2>
-              <p className="mt-3 text-sm sm:text-base text-slate-600">
+              <p className="mt-3 text-sm sm:text-base text-slate-950">
                 Your patients or students complete the whole feedback process in under 60 seconds on their phone.
               </p>
             </div>
@@ -366,12 +366,12 @@ export default function Home() {
             <div className="mt-10 grid gap-6 md:grid-cols-3">
               {conversionSteps.map(({ icon: Icon, number, title, copy }) => (
                 <div key={number} className="relative rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                  <span className="absolute right-4 top-3 text-4xl font-black text-slate-100">{number}</span>
+                  <span className="absolute right-4 top-3 text-4xl font-bold text-slate-200">{number}</span>
                   <span className="grid h-11 w-11 place-items-center rounded-xl bg-[#0A4C95] text-white">
                     <Icon size={20} />
                   </span>
-                  <h3 className="mt-4 text-lg font-black text-slate-900">{title}</h3>
-                  <p className="mt-2 text-xs sm:text-sm leading-relaxed text-slate-600">{copy}</p>
+                  <h3 className="mt-4 text-lg font-bold text-slate-950">{title}</h3>
+                  <p className="mt-2 text-xs sm:text-sm leading-relaxed text-slate-950 font-normal">{copy}</p>
                 </div>
               ))}
             </div>
@@ -382,8 +382,8 @@ export default function Home() {
         <section className="bg-slate-50/80 px-4 py-16 sm:py-24 border-t border-slate-200/60">
           <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-10 lg:grid-cols-2 lg:gap-14">
             <div>
-              <p className="text-xs font-black uppercase tracking-[.18em] text-[#F37021]">2026 Google Policy Compliant</p>
-              <h2 className="mt-3 text-2xl font-black text-slate-950 sm:text-4xl">
+              <p className="text-xs font-bold uppercase tracking-wider text-[#F37021]">2026 Google Policy Compliant</p>
+              <h2 className="mt-3 text-2xl font-bold text-slate-950 sm:text-4xl">
                 Engineered for Safe & Organic Growth
               </h2>
               <div className="mt-6 space-y-5">
@@ -393,8 +393,8 @@ export default function Home() {
                       <Icon size={19} />
                     </span>
                     <div>
-                      <h3 className="text-sm sm:text-base font-black text-slate-900">{title}</h3>
-                      <p className="mt-1 text-xs sm:text-sm leading-relaxed text-slate-600">{copy}</p>
+                      <h3 className="text-sm sm:text-base font-bold text-slate-950">{title}</h3>
+                      <p className="mt-1 text-xs sm:text-sm leading-relaxed text-slate-950 font-normal">{copy}</p>
                     </div>
                   </div>
                 ))}
@@ -404,18 +404,18 @@ export default function Home() {
             <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-xl sm:p-7">
               <div className="flex items-center justify-between border-b border-slate-100 pb-4">
                 <div>
-                  <p className="text-[11px] font-black uppercase text-[#F37021]">Reputation Guardrails</p>
-                  <p className="text-base font-extrabold text-slate-900">Anti-Spam & Natural Phrasing</p>
+                  <p className="text-[11px] font-bold uppercase text-[#F37021]">Reputation Guardrails</p>
+                  <p className="text-base font-bold text-slate-950">Anti-Spam & Natural Phrasing</p>
                 </div>
                 <BadgeCheck size={26} className="text-emerald-600" />
               </div>
 
               <div className="mt-5 grid gap-3 sm:grid-cols-2">
                 <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-4">
-                  <p className="font-extrabold text-xs text-emerald-950 flex items-center gap-1.5">
+                  <p className="font-bold text-xs text-emerald-950 flex items-center gap-1.5">
                     <Check size={16} className="text-emerald-700" /> MediRank Safe Flow
                   </p>
-                  <ul className="mt-3 space-y-2 text-xs font-medium text-slate-700">
+                  <ul className="mt-3 space-y-2 text-xs font-medium text-slate-950">
                     <li>✓ 24-hr phrase variation limits</li>
                     <li>✓ 7-day device lock protection</li>
                     <li>✓ Genuine visitor choice</li>
@@ -424,10 +424,10 @@ export default function Home() {
                 </div>
 
                 <div className="rounded-2xl border border-red-200 bg-red-50/40 p-4">
-                  <p className="font-extrabold text-xs text-red-900 flex items-center gap-1.5">
+                  <p className="font-bold text-xs text-red-900 flex items-center gap-1.5">
                     <AlertTriangle size={15} className="text-red-600" /> Generic Fake Systems
                   </p>
-                  <ul className="mt-3 space-y-2 text-xs font-medium text-slate-700">
+                  <ul className="mt-3 space-y-2 text-xs font-medium text-slate-950">
                     <li>✕ Repeated bot templates</li>
                     <li>✕ Keyword stuffing penalties</li>
                     <li>✕ Fake bulk submissions</li>
@@ -443,21 +443,21 @@ export default function Home() {
         <section id="categories" className="bg-white py-16 sm:py-24 border-t border-slate-100">
           <div className="container-page">
             <div className="rounded-[2.5rem] bg-[#0A4C95] px-5 py-10 text-center text-white shadow-2xl sm:px-10 sm:py-14">
-              <p className="text-xs font-black uppercase tracking-[.18em] text-[#F37021]">Built for Indian Practitioners & Educators</p>
-              <h2 className="mt-3 text-2xl font-black tracking-tight sm:text-4xl">
+              <p className="text-xs font-bold uppercase tracking-wider text-[#F37021]">Built for Indian Practitioners & Educators</p>
+              <h2 className="mt-3 text-2xl font-bold tracking-tight sm:text-4xl">
                 Made for Healthcare & Education Businesses
               </h2>
               
               {/* Healthcare List */}
               <div className="mt-8 text-left max-w-4xl mx-auto">
-                <p className="text-xs font-bold uppercase tracking-wider text-blue-200 mb-3 text-center sm:text-left">
+                <p className="text-xs font-semibold uppercase tracking-wider text-blue-100 mb-3 text-center sm:text-left">
                   🏥 Healthcare Practices
                 </p>
                 <div className="flex flex-wrap justify-center sm:justify-start gap-2.5">
                   {healthcarePractices.map(({ label, icon: Icon }) => (
                     <span
                       key={label}
-                      className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-white hover:text-[#0A4C95]"
+                      className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3.5 py-2 text-xs font-medium text-white shadow-sm transition hover:bg-white hover:text-[#0A4C95]"
                     >
                       <Icon size={15} className="text-[#F37021]" />
                       {label}
@@ -468,14 +468,14 @@ export default function Home() {
 
               {/* Education List */}
               <div className="mt-7 text-left max-w-4xl mx-auto">
-                <p className="text-xs font-bold uppercase tracking-wider text-blue-200 mb-3 text-center sm:text-left">
+                <p className="text-xs font-semibold uppercase tracking-wider text-blue-100 mb-3 text-center sm:text-left">
                   🎓 Education & Coaching Institutes
                 </p>
                 <div className="flex flex-wrap justify-center sm:justify-start gap-2.5">
                   {educationPractices.map(({ label, icon: Icon }) => (
                     <span
                       key={label}
-                      className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-white hover:text-[#0A4C95]"
+                      className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3.5 py-2 text-xs font-medium text-white shadow-sm transition hover:bg-white hover:text-[#0A4C95]"
                     >
                       <Icon size={15} className="text-[#F37021]" />
                       {label}
@@ -487,7 +487,7 @@ export default function Home() {
               <div className="mt-10">
                 <Link
                   href="/signup"
-                  className="inline-flex min-h-12 items-center gap-2 rounded-xl bg-[#F37021] px-7 font-extrabold text-white shadow-xl transition hover:scale-[1.03] active:scale-[.98]"
+                  className="inline-flex min-h-12 items-center gap-2 rounded-xl bg-[#F37021] px-7 font-bold text-white shadow-xl transition hover:scale-[1.03] active:scale-[.98]"
                 >
                   Get Started Free Today <ArrowRight size={18} />
                 </Link>
@@ -501,8 +501,8 @@ export default function Home() {
       <footer className="border-t border-slate-200 bg-white py-8">
         <div className="container-page flex flex-col items-center justify-between gap-4 sm:flex-row text-center sm:text-left">
           <Logo />
-          <p className="text-xs sm:text-sm font-medium text-slate-600">
-            A product by <b>Vyapar Wallah</b> · © 2026 MediRank. All rights reserved.
+          <p className="text-xs sm:text-sm font-normal text-slate-950">
+            A product by <b className="font-semibold text-black">Vyapar Wallah</b> · © 2026 MediRank. All rights reserved.
           </p>
         </div>
       </footer>

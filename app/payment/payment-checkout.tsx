@@ -37,12 +37,12 @@ declare global {
 }
 
 const details: Record<Plan, { name: string; price: number; period: string }> = {
-  "1-month": { name: "1 Month Plan", price: 299, period: "/ month" },
-  "3-month": { name: "3 Months (Quarterly)", price: 799, period: "/ 3 months" },
-  "6-month": { name: "6 Months (Half-Yearly)", price: 1599, period: "/ 6 months" },
+  "1-month": { name: "1 Month Plan", price: 699, period: "/ month" },
+  "3-month": { name: "3 Months (Quarterly)", price: 1999, period: "/ 3 months" },
+  "6-month": { name: "6 Months (Half-Yearly)", price: 2999, period: "/ 6 months" },
   "1-year": { name: "1 Year (Annual)", price: 2999, period: "/ year" },
-  growth: { name: "Growth Plan", price: 999, period: "/ month" },
-  premium: { name: "Premium Plan", price: 1999, period: "/ month" },
+  growth: { name: "Growth Plan", price: 1999, period: "/ 3 months" },
+  premium: { name: "Premium Plan", price: 2999, period: "/ 6 months" },
 };
 
 interface AppliedCoupon {

@@ -148,13 +148,13 @@ export function ReviewExperience({
 
   const t = currentLanguage ? copy[currentLanguage] : copy.english;
   const isCoaching = doctor.business_type === "coaching";
-  const doctorName = titleCase(doctor.doctor_name.replace(/^(dr|mr|mrs|ms)\.?\s*/i, ""));
+  const doctorName = titleCase(doctor.doctor_name.replace(/^(dr|mr|mrs|ms|prof)\.?\s*/i, ""));
   const clinicName = doctor.clinic_name.trim();
   const displayDoctorName = isCoaching ? doctorName : `Dr. ${doctorName}`;
   const visitQuestion = isCoaching
     ? currentLanguage === "hinglish"
-      ? `${clinicName} mein ${doctorName} ke saath aapka learning experience kaisa raha?`
-      : `How was your learning experience with ${doctorName} at ${clinicName}?`
+      ? `${clinicName} mein aapka learning experience kaisa raha?`
+      : `How was your learning experience at ${clinicName}?`
     : currentLanguage === "hinglish"
       ? `${clinicName} mein ${displayDoctorName} ke saath aapka experience kaisa raha?`
       : `How was your experience with ${displayDoctorName} at ${clinicName}?`;

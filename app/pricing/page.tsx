@@ -47,31 +47,31 @@ const plans = [
       "Unlimited AI Google Review QR scans",
       "English & Hinglish AI review generator",
       "Smart 5-star validation shield",
-      "Clinic-branded reception QR standee design",
+      "Custom reception QR standee design",
       "WhatsApp review recovery sharing",
-      "Live patient analytics dashboard",
+      "Live visitor analytics dashboard",
       "Standard email & chat support",
     ],
     cta: "Start 3-Day Free Trial",
-    href: "/signup",
+    href: "/payment?plan=1-month",
     popular: false,
   },
   {
     id: "3-month",
     name: "3 Months (Quarterly)",
-    tagline: "Best for growing clinics looking to double authentic Google reviews.",
-    price: "₹1,799",
+    tagline: "Best for growing practices & institutes looking to double authentic Google reviews.",
+    price: "₹1,999",
     originalPrice: "₹2,499",
-    period: "/ 3 Months (₹599/mo)",
-    savings: "Save 15%",
+    period: "/ 3 Months (₹666/mo)",
+    savings: "Save 20%",
     trialBadge: "3-Day Free Trial Included",
     popular: true,
     features: [
       "Everything in 1 Month Plan",
       "Full 3-Day Free Trial Included",
       "Priority Google Map Pack Top 3 SEO strategy",
-      "Multi-doctor & clinic staff feedback support",
-      "Custom clinic-branded patient landing page",
+      "Multi-staff & branch feedback support",
+      "Custom branded visitor landing page",
       "Automated WhatsApp review reminders",
       "Advanced conversion & keyword analytics",
       "Priority WhatsApp & phone support",
@@ -82,17 +82,17 @@ const plans = [
   {
     id: "6-month",
     name: "6 Months (Half-Yearly)",
-    tagline: "For busy clinics wanting long-term review dominance in their city.",
-    price: "₹3,299",
-    originalPrice: "₹4,499",
-    period: "/ 6 Months (₹549/mo)",
-    savings: "Save 25%",
+    tagline: "For busy clinics & coaching institutes wanting long-term review dominance in their city.",
+    price: "₹2,999",
+    originalPrice: "₹4,194",
+    period: "/ 6 Months (₹499/mo)",
+    savings: "Save 30%",
     trialBadge: "Best ROI",
     features: [
       "Everything in 3 Months Plan",
       "Full 3-Day Free Trial Included",
-      "Dedicated account manager for clinic growth",
-      "Customized patient treatment keywords setup",
+      "Dedicated account manager for local growth",
+      "Customized treatment / course keywords setup",
       "Negative review alert & resolution shield",
       "High-resolution physical acrylic standee print file",
       "Quarterly Google Business Profile audit",
@@ -103,25 +103,25 @@ const plans = [
   },
   {
     id: "1-year",
-    name: "1 Year (Annual)",
-    tagline: "Complete 365-day autopilot growth for established hospitals & clinics.",
-    price: "₹5,999",
-    originalPrice: "₹8,999",
-    period: "/ Year (₹499/mo)",
-    savings: "Save 35%",
+    name: "1 Year (Annual Enterprise)",
+    tagline: "Complete 365-day autopilot growth for established hospitals, schools & coaching centers.",
+    price: "Custom",
+    originalPrice: null,
+    period: "Annual Enterprise Partner",
+    savings: "Save 40%",
     trialBadge: "Maximum Savings",
     features: [
       "Everything in 6 Months Plan",
       "Full 3-Day Free Trial Included",
-      "Multi-branch clinic & hospital profile setup",
-      "Annual clinic SEO & reputation management",
+      "Multi-branch clinic & institute profile setup",
+      "Annual local SEO & reputation management",
       "Automated WhatsApp CRM & feedback sync",
       "Custom API integration assistance",
       "Full team onboarding & reception training",
       "Dedicated Senior Growth Partner",
     ],
-    cta: "Start Free Trial / Upgrade",
-    href: "/payment?plan=1-year",
+    cta: "Connect with Team",
+    href: "https://wa.me/919187641492?text=Hi%20Vyapar%20Wallah,%20I%20want%20to%20discuss%20the%20Annual%20Enterprise%20Plan%20for%20MediRank.",
   },
 ] as const;
 
@@ -129,19 +129,19 @@ const steps = [
   {
     title: "Start 3-Day Free Trial",
     description:
-      "Sign up in 30 seconds. Get your clinic's smart QR code instantly with zero commitment and no credit card required.",
+      "Sign up in 30 seconds. Get your smart QR code instantly with zero commitment and no credit card required.",
     icon: Sparkles,
   },
   {
-    title: "Patient Scans & Reviews",
+    title: "Visitors Scan & Review",
     description:
-      "Patients scan your chamber or reception desk QR code. MediRank AI generates 3 authentic, natural English or Hinglish reviews in seconds.",
+      "Patients or students scan your reception desk QR code. MediRank AI generates authentic, natural English or Hinglish reviews in seconds.",
     icon: QrCode,
   },
   {
     title: "1-Click Google Maps Post",
     description:
-      "Happy patients post to your Google Business Profile with one tap, boosting your clinic into Google's Top 3 Local Map Pack.",
+      "Happy visitors post to your Google Business Profile with one tap, boosting your listing into Google's Top 3 Local Map Pack.",
     icon: TrendingUp,
   },
 ] as const;
@@ -160,10 +160,10 @@ export default function PricingPage() {
               🎁 3-Day Full-Access Free Trial for All New Signups • No Card Needed
             </div>
             <h1 className="mx-auto mt-6 max-w-4xl text-4xl font-extrabold leading-tight tracking-[-0.04em] text-slate-950 sm:text-6xl">
-              Transparent, High-ROI Plans for Indian Doctors & Clinics
+              Transparent, High-ROI Plans for Clinics, Doctors & Coaching Institutes
             </h1>
             <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-slate-600 sm:text-xl">
-              Turn happy patients into authentic 5-star Google reviews. Boost your clinic&apos;s patient footfall and local trust with AI automation.
+              Turn happy patients and students into authentic 5-star Google reviews. Boost local trust, admissions, and footfall with AI automation.
             </p>
             <div className="mt-7 flex flex-wrap items-center justify-center gap-x-6 gap-y-3 text-sm font-semibold text-slate-700">
               {["3-Day Full-Access Free Trial", "Instant QR Code Activation", "Cancel or upgrade anytime", "No hidden charges"].map((item) => (
@@ -183,7 +183,7 @@ export default function PricingPage() {
                 Simple Duration Plans
               </p>
               <h2 id="plans-heading" className="mt-3 text-3xl font-extrabold tracking-tight text-slate-950 sm:text-4xl">
-                Choose the best plan for your clinic
+                Choose the best plan for your practice or institute
               </h2>
               <p className="mt-3 text-slate-600">
                 All plans start with a <strong>3-Day 100% Free Trial</strong>. Recharge whenever you&apos;re ready.
@@ -247,6 +247,8 @@ export default function PricingPage() {
 
                   <Link
                     href={plan.href}
+                    target={plan.id === "1-year" ? "_blank" : undefined}
+                    rel={plan.id === "1-year" ? "noreferrer" : undefined}
                     className={`mt-7 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-center text-sm font-bold transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
                       plan.popular
                         ? "bg-[#0A4C95] text-white shadow-md hover:bg-blue-900"
