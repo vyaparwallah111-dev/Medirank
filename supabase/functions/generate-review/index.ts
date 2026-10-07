@@ -210,8 +210,9 @@ function parseReviews(raw:unknown,expectedCount:number):ParseReviewsResult{
       const raw=sanitizeText((item as {review?:unknown}).review,1600);
       return raw.replace(/https?:\/\/\S+/gi,'').replace(/\[([^\]]+)\]\([^)]+\)/g,'$1').trim();
     });
-    if(reviews.length!==expectedCount||reviews.some(review=>review.length<10))return {reviews:[],failureReason:'wrong_review_count'};
-    return {reviews:unique(reviews,expectedCount)};
+    const validReviews = unique(reviews.filter((r) => r.length >= 10), expectedCount);
+    if (!validReviews.length) return { reviews: [], failureReason: "no_valid_reviews" };
+    return { reviews: validReviews };
   }catch(error){
     const message=error instanceof Error?error.message:String(error);
     console.error('Strict Gemini JSON contract validation failed',message);
@@ -309,7 +310,7 @@ Deno.serve(async(req)=>{
     }
 
     const isCoaching = doctor.business_type === 'coaching';
-    const targetCount = isCoaching ? 1 : TARGET_COUNT;
+    const targetCount = TARGET_COUNT;
 
     // 1. Hardening: Reject generation if clinic plan/trial has expired
     if(doctor.plan_expires_at && new Date(doctor.plan_expires_at).getTime() < Date.now()){
@@ -317,20 +318,16 @@ Deno.serve(async(req)=>{
       return fail('plan_expired', 402);
     }
 
-    // 2. Hardening: Multi-level flood defense against automated Gemini draining attacks
-    const fiveMinutesAgo=new Date(Date.now()-5*60_000).toISOString();
+    // 2. Multi-level flood defense (max 30 generations per 10 minutes per device)
     const tenMinutesAgo=new Date(Date.now()-10*60_000).toISOString();
-
-    // 2a. Per-device rate limit (max 6 generations per 5 minutes per device)
-    const {count:deviceGenerations}=await db.from('review_generation_meta').select('*',{count:'exact',head:true}).eq('device_token',deviceToken).gte('created_at',fiveMinutesAgo);
-    if((deviceGenerations??0)>=6){
+    const {count:deviceGenerations}=await db.from('review_generation_meta').select('*',{count:'exact',head:true}).eq('device_token',deviceToken).gte('created_at',tenMinutesAgo);
+    if((deviceGenerations??0)>=30){
       console.warn('Device rate limit triggered',{deviceToken,doctorId});
       return fail('rate_limit_exceeded',429);
     }
 
-    // 2b. Per-doctor rate limit (max 40 generations per 10 minutes)
     const {count:recentDoctorGenerations}=await db.from('review_generation_meta').select('*',{count:'exact',head:true}).eq('doctor_id',doctorId).gte('created_at',tenMinutesAgo);
-    if((recentDoctorGenerations??0)>40){
+    if((recentDoctorGenerations??0)>60){
       console.warn('Rate limit triggered for doctor_id',{doctorId});
       return fail('rate_limit_exceeded',429);
     }
@@ -396,7 +393,7 @@ Deno.serve(async(req)=>{
       const activeChips = (digest.selected_chips.length ? digest.selected_chips : digest.high_priority_keywords);
       const chipsString = activeChips.length ? activeChips.map(k => `"${k}"`).join(', ') : 'quality teaching, doubt clearing sessions, concept clarity';
       
-      prompt = `You are a Google review generator for an educational institute, coaching center, school, or academy. Generate exactly 1 authentic, genuine first-person review from a student or parent perspective.
+      prompt = `You are a Google review generator for an educational institute, coaching center, school, or academy. Generate exactly ${TARGET_COUNT} authentic, unique first-person reviews from a student or parent perspective.
 
 INSTITUTE: ${digest.clinic_name} (${digest.specialization || 'Coaching & Guidance'}) in ${digest.primary_area || digest.city}.
 RATING: ${rating} star${rating !== 1 ? 's' : ''} | LANGUAGE: ${digest.language === 'hinglish' ? 'natural everyday Hinglish (mix of Hindi & English as Indian students text)' : 'English'}
@@ -407,17 +404,17 @@ KEY HIGHLIGHTS TO WEAVE NATURALLY: ${chipsString}
 PERSPECTIVE & RULES:
 - Write strictly in FIRST PERSON as a student or parent of this institute ("I joined ${digest.clinic_name} for...", "The faculty and teachers here explain concepts very clearly...", "My test scores and confidence improved...", "Doubt solving sessions and study environment at ${digest.clinic_name} are great...").
 - STRICT: Do NOT invent or mention any individual professor, doctor, or director personal name. Focus purely on the Institute name ("${digest.clinic_name}"), its teaching faculty, environment, tests, and study quality.
-- Keep it natural, authentic, 3-4 sentences.
-- Avoid robotic clichés (e.g. "top notch", "highly recommended institute", "very satisfied") - make it sound like a real student sharing real progress.
+- Vary the ${TARGET_COUNT} reviews naturally: 1 short & punchy (2-3 sentences), 1 medium with experience details (3-4 sentences), 1 focusing on results & concept clarity.
+- Avoid robotic clichés (e.g. "top notch", "highly recommended institute", "very satisfied") - make it sound like real students sharing real progress.
 
-Return exactly 1 review as JSON: [{"review": "..."}]`;
+Return exactly ${TARGET_COUNT} reviews as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
 
-      simplifiedPrompt = `Write exactly 1 authentic first-person Google review for ${digest.clinic_name} (${digest.specialization || 'Coaching & Education'}), in ${digest.language === 'hinglish' ? 'natural Hinglish' : 'English'}. Rating: ${rating} stars. Mention: ${chipsString}.
-STRICT: Do NOT include any individual person or professor name; refer only to the institute ("${digest.clinic_name}") and its teachers/faculties. Length: 3-4 natural sentences from a student/parent perspective.
-Return as JSON: [{"review": "..."}]`;
+      simplifiedPrompt = `Write exactly ${TARGET_COUNT} authentic first-person Google reviews for ${digest.clinic_name} (${digest.specialization || 'Coaching & Education'}), in ${digest.language === 'hinglish' ? 'natural Hinglish' : 'English'}. Rating: ${rating} stars. Mention: ${chipsString}.
+STRICT: Do NOT include any individual person or professor name; refer only to the institute ("${digest.clinic_name}") and its teachers/faculties. Length: 2-4 natural sentences each from a student/parent perspective. Make the ${TARGET_COUNT} reviews different from each other.
+Return as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
 
-      minimalPrompt = `Write 1 short natural first-person Google review for ${digest.clinic_name} (${digest.specialization || 'Coaching'}) from a student. Rating: ${rating} stars. Mention ${chipsString}. No individual person names, only the institute name.
-Return as JSON: [{"review": "..."}]`;
+      minimalPrompt = `Write ${TARGET_COUNT} short natural first-person Google reviews for ${digest.clinic_name} (${digest.specialization || 'Coaching'}) from a student. Rating: ${rating} stars. Mention ${chipsString}. No individual person names, only the institute name.
+Return as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
     } else {
       // DOCTOR SPECIFIC PROMPT (Preserves 3 patient reviews for clinics)
       const selectedConcern=rating>=4&&digest.patient_concerns.length?randomItem(digest.patient_concerns):null;
@@ -503,11 +500,11 @@ Return as JSON: [{"review": "..."}, {"review": "..."}, {"review": "..."}]`;
     type LayerNumber=1|2|3|4;
     type LayerAttempt={layer:LayerNumber;label:string;model:string;prompt:string;maxOutputTokens:number;timeoutMs:number};
     const primaryLayers:LayerAttempt[]=[
-      {layer:1,label:'full_model+full_prompt',model:GEMINI_MODEL,prompt,maxOutputTokens:isCoaching?1024:4096,timeoutMs:LAYER_TIMEOUTS_MS[1]},
-      {layer:2,label:'lite_model+full_prompt',model:GEMINI_MODEL_LITE,prompt,maxOutputTokens:isCoaching?800:4096,timeoutMs:LAYER_TIMEOUTS_MS[2]},
-      {layer:3,label:'lite_model+simplified_prompt',model:GEMINI_MODEL_LITE,prompt:simplifiedPrompt,maxOutputTokens:isCoaching?500:2048,timeoutMs:LAYER_TIMEOUTS_MS[3]},
+      {layer:1,label:'full_model+full_prompt',model:GEMINI_MODEL,prompt,maxOutputTokens:4096,timeoutMs:LAYER_TIMEOUTS_MS[1]},
+      {layer:2,label:'lite_model+full_prompt',model:GEMINI_MODEL_LITE,prompt,maxOutputTokens:4096,timeoutMs:LAYER_TIMEOUTS_MS[2]},
+      {layer:3,label:'lite_model+simplified_prompt',model:GEMINI_MODEL_LITE,prompt:simplifiedPrompt,maxOutputTokens:2048,timeoutMs:LAYER_TIMEOUTS_MS[3]},
     ];
-    const lastResortLayer:LayerAttempt={layer:4,label:'lite_model+minimal_prompt(last_resort)',model:GEMINI_MODEL_LITE,prompt:minimalPrompt,maxOutputTokens:isCoaching?400:1200,timeoutMs:LAYER_TIMEOUTS_MS[4]};
+    const lastResortLayer:LayerAttempt={layer:4,label:'lite_model+minimal_prompt(last_resort)',model:GEMINI_MODEL_LITE,prompt:minimalPrompt,maxOutputTokens:1200,timeoutMs:LAYER_TIMEOUTS_MS[4]};
 
     async function runLayer(cfg:LayerAttempt):Promise<{reviews:string[]|null;metrics:Record<string,unknown>}>{
       const attemptStartMs=Date.now();

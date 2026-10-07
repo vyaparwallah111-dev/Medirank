@@ -362,11 +362,9 @@ export function ReviewExperience({
           .filter((review) => review.content.length > 0)
           .slice(0, 3)
         : [];
-      // Backend contract: {success:true, reviews:[...]} on real AI output (now the result of up to 4
-      // internal fallback layers - see generate-review/index.ts), {success:false, error} only if every
-      // layer failed. Never trust a partial or malformed payload as a success - if it isn't explicitly
-      // success:true with 3 reviews, treat it as a failure and show the "try again" state.
-      if (response.ok && data.success === true && returned.length === 3) {
+      // Backend contract: {success:true, reviews:[...]} on real AI output.
+      // Accept returned reviews as long as at least 1 valid review is present.
+      if (response.ok && data.success === true && returned.length >= 1) {
         const quality = data.quality && typeof data.quality === "object" ? data.quality as Record<string, unknown> : {};
         return { reviews: returned, quality };
       }
