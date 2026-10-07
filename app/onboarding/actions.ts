@@ -3,6 +3,8 @@
 import { redirect } from 'next/navigation';
 import { getAuthenticatedUser } from '@/lib/dashboard';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { notifyAdminNewSignup } from '@/lib/admin-notify';
+import { sanitizeAndValidateUrl } from '@/lib/url-validation';
 
 const keywordSets: Record<string, { keyword: string; category: string }[]> = {
   dentist: [
@@ -48,7 +50,8 @@ export async function completeOnboarding(formData: FormData) {
       const specialization = String(formData.get('specialization') || '').trim();
       const clinicName = String(formData.get('clinic_name') || '').trim();
       const city = String(formData.get('city') || '').trim();
-      const gmbReviewLink = String(formData.get('gmb_review_link') || '').trim() || null;
+      const rawGmbReviewLink = String(formData.get('gmb_review_link') || '').trim();
+      const gmbReviewLink = sanitizeAndValidateUrl(rawGmbReviewLink);
       const businessCategory = String(formData.get('business_category') || specialization || '').trim() || null;
 
       if (!doctorName || !clinicName) {
@@ -114,6 +117,25 @@ export async function completeOnboarding(formData: FormData) {
       } catch (keywordErr) {
         console.warn('Keyword seed note:', keywordErr);
       }
+
+      // Asynchronously notify admin of new clinic / coaching registration
+      try {
+        void notifyAdminNewSignup({
+          email: user.email || '',
+          name: doctorName,
+          businessName: clinicName,
+          businessType,
+          specialization,
+          city,
+          phone: (formData.get('phone') as string) || (user as any).phone || null,
+          slug,
+          reviewLink: gmbReviewLink,
+          stage: 'onboarding_complete',
+        });
+      } catch (notifyErr) {
+        console.warn('Admin notification error:', notifyErr);
+      }
+
       shouldRedirect = true;
     }
   } catch (err: any) {

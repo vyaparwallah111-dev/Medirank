@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { otpMatches } from "@/lib/auth/otp";
 import { parseAuthRequest } from "@/lib/auth/validation";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { notifyAdminNewSignup } from "@/lib/admin-notify";
 
 export const runtime = "nodejs";
 
@@ -46,6 +47,17 @@ export async function POST(request: Request) {
     if (input.mode === "signup") {
       const { error: createError } = await admin.auth.admin.createUser({ email: input.email, password, email_confirm: true, phone: phone || undefined });
       if (createError && !createError.message.toLowerCase().includes("registered")) return NextResponse.json({ error: createError.message }, { status: 400 });
+
+      // Notify admin asynchronously of new account signup step
+      try {
+        void notifyAdminNewSignup({
+          email: input.email,
+          phone: phone || null,
+          stage: "signup",
+        });
+      } catch (notifyErr) {
+        console.warn("Signup notification warning:", notifyErr);
+      }
     }
 
     const auth = createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });

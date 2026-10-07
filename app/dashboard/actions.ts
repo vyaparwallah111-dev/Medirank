@@ -3,6 +3,7 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { getAuthenticatedUser, getCurrentDoctor } from '@/lib/dashboard';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { sanitizeAndValidateUrl } from '@/lib/url-validation';
 
 export async function addKeyword(formData: FormData) {
   const doctor = await getCurrentDoctor();
@@ -168,8 +169,9 @@ export async function updateProfile(formData:FormData){
   const theme_config={primary:color('theme_primary','#1E40AF'),accent:color('theme_accent','#F97316'),background:color('theme_background','#F8FAFC')};
   const clean=(value:FormDataEntryValue|null,max=80)=>String(value||'').trim().slice(0,max);
   const top_services=clean(formData.get('top_services'),600).split(',').map(item=>item.trim()).filter(Boolean).slice(0,12);
-  const knowledge_base={area_name:clean(formData.get('area_name')),city_name:clean(formData.get('city_name')),top_services};
-  const updates={doctor_name:String(formData.get('doctor_name')||''),clinic_name:String(formData.get('clinic_name')||''),specialization:String(formData.get('specialization')||''),city:String(formData.get('city')||''),phone:String(formData.get('phone')||''),gmb_review_link:String(formData.get('gmb_review_link')||''),logo_url,theme_config,knowledge_base};
+  const rawGmbReviewLink = String(formData.get('gmb_review_link') || '').trim();
+  const gmb_review_link = sanitizeAndValidateUrl(rawGmbReviewLink);
+  const updates={doctor_name:String(formData.get('doctor_name')||''),clinic_name:String(formData.get('clinic_name')||''),specialization:String(formData.get('specialization')||''),city:String(formData.get('city')||''),phone:String(formData.get('phone')||''),gmb_review_link,logo_url,theme_config,knowledge_base};
   const {error}=await supabase.from('doctors').update(updates).eq('id',doctor.id).eq('auth_user_id',user.id);
   if(error)throw new Error(error.message);
   revalidatePath('/dashboard','layout');revalidatePath(`/r/${doctor.slug}`);redirect('/dashboard/profile?saved=1');
